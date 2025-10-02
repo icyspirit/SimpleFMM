@@ -80,7 +80,7 @@ int main(int argc, char** argv)
             }
         }
     }
-    vector_potentials_direct.sync();
+    vector_potentials_direct.sync(); vector_potentials_direct.template allreduce<double>();
     toc("Direct potential calculation");
 
     tic("Direct field calculation");
@@ -92,7 +92,7 @@ int main(int argc, char** argv)
             }
         }
     }
-    vector_fields_direct.sync();
+    vector_fields_direct.sync(); vector_fields_direct.template allreduce<double>();
     toc("Direct field calculation");
 
     // Calculate error

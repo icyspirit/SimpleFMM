@@ -129,12 +129,12 @@ class FMM3D {
 
 private:
     const Partitioner_t& _partitioner;
-    const MPI_Comm _shm_comm;
+    const MPI_Comm _comm;
     const std::vector<Coord_t>& _positions;
     int _n_particle;
     T _width;
 
-    int _shm_size, _shm_rank;
+    int _size, _rank;
     svector<T> _phi;
     svector<std::array<T, nm2i(p, p) + 1>> _Zrho;
     svector<std::array<Vector<std::complex<T>, dim>, nm2i(p, p) + 1>> _Zgrho;
@@ -173,23 +173,23 @@ private:
     }
 
 public:
-    FMM3D(const Partitioner_t& partitioner, MPI_Comm shm_comm, const std::function<std::vector<int>(int)>& self_generator):
+    FMM3D(const Partitioner_t& partitioner, MPI_Comm comm, const std::function<std::vector<int>(int)>& self_generator):
         _partitioner{partitioner},
-        _shm_comm{shm_comm},
+        _comm{comm},
         _positions{partitioner.positions()},
         _n_particle{static_cast<int>(_positions.size())},
         _width{partitioner.box().width()},
-        _phi(_shm_comm, _n_particle),
-        _Zrho(_shm_comm, _n_particle),
-        _Zgrho(_shm_comm, _n_particle*support_gradient)
+        _phi(_comm, _n_particle),
+        _Zrho(_comm, _n_particle),
+        _Zgrho(_comm, _n_particle*support_gradient)
     {
-        MPI_Comm_size(_shm_comm, &_shm_size);
-        MPI_Comm_rank(_shm_comm, &_shm_rank);
+        MPI_Comm_size(_comm, &_size);
+        MPI_Comm_rank(_comm, &_rank);
 
         _partitioner.root()->traverse(
             [&](const auto* node) {
                 for (const int i: node->indices()) {
-                    if (i >= begin(_n_particle, _shm_size, _shm_rank) && i < end(_n_particle, _shm_size, _shm_rank)) {
+                    if (i >= begin(_n_particle, _size, _rank) && i < end(_n_particle, _size, _rank)) {
                         const Coord_t delta = _partitioner.box().rotate(_positions[i]) -
                                               _partitioner.box().get_center(node->l(), node->c());
                         const T rho = delta.norm();
@@ -227,10 +227,10 @@ public:
                 }
             }
         );
-        _phi.sync();
-        _Zrho.sync();
+        _phi.sync(); _phi.template allreduce<T>();
+        _Zrho.sync(); _Zrho.template allreduce<T>();
         if constexpr (support_gradient) {
-            _Zgrho.sync();
+            _Zgrho.sync(); _Zgrho.template allreduce<T>();
         }
 
         for (int n=0; n<=p; ++n) {
@@ -285,8 +285,8 @@ public:
         _M.reserve(_partitioner.level() + 1);
         _L.reserve(_partitioner.level() + 1);
         for (int l=0; l<=_partitioner.level(); ++l) {
-            _M.emplace_back(_partitioner.octreeLevel(l).n_node(), _shm_comm);
-            _L.emplace_back(_partitioner.octreeLevel(l).n_node(), _shm_comm);
+            _M.emplace_back(_partitioner.octreeLevel(l).n_node(), _comm);
+            _L.emplace_back(_partitioner.octreeLevel(l).n_node(), _comm);
         }
 
         if (get_rank() == 0) {
@@ -295,8 +295,8 @@ public:
         }
     }
 
-    FMM3D(const Partitioner_t& partitioner, MPI_Comm shm_comm):
-        FMM3D(partitioner, shm_comm, [](int i) { return std::vector{i}; })
+    FMM3D(const Partitioner_t& partitioner, MPI_Comm comm):
+        FMM3D(partitioner, comm, [](int i) { return std::vector{i}; })
     {
 
     }
@@ -308,7 +308,7 @@ public:
 
     inline MPI_Comm comm() const noexcept
     {
-        return _shm_comm;
+        return _comm;
     }
 
     const auto& slist() const noexcept
@@ -371,8 +371,7 @@ public:
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& indices = olevel.indices();
 
-        M.sync();
-        for (int i_leaf=begin(olevel.n_leaf(), _shm_size, _shm_rank); i_leaf<end(olevel.n_leaf(), _shm_size, _shm_rank); ++i_leaf) {
+        for (int i_leaf=begin(olevel.n_leaf(), _size, _rank); i_leaf<end(olevel.n_leaf(), _size, _rank); ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
@@ -415,8 +414,7 @@ public:
         const auto& olevel = _partitioner.octreeLevel(lp);
         const auto& clist = olevel.clist();
 
-        Mc.sync();
-        for (int ip=begin(olevel.n_node(), _shm_size, _shm_rank); ip<end(olevel.n_node(), _shm_size, _shm_rank); ++ip) {
+        for (int ip=begin(olevel.n_node(), _size, _rank); ip<end(olevel.n_node(), _size, _rank); ++ip) {
             for (int inz=0; inz<clist.nnz(ip); ++inz) {
                 const auto& [ic, cc] = clist.value(ip, inz);
                 M2Mc(lp + 1, cc, Mc[ic], Mp[ip]);
@@ -494,8 +492,7 @@ public:
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& ilist = olevel.ilist();
 
-        Ml.sync();
-        for (int i=begin(olevel.n_node(), _shm_size, _shm_rank); i<end(olevel.n_node(), _shm_size, _shm_rank); ++i) {
+        for (int i=begin(olevel.n_node(), _size, _rank); i<end(olevel.n_node(), _size, _rank); ++i) {
             for (int inz=0; inz<ilist.nnz(i); ++inz) {
                 const auto& [ii, dijk] = ilist.value(i, inz);
                 M2Lc(l, dijk, Ml[ii], Ll[i]);
@@ -530,8 +527,7 @@ public:
         const auto& olevel = _partitioner.octreeLevel(lc);
         const auto& plist = olevel.plist();
 
-        Lp.sync();
-        for (int ic=begin(olevel.n_node(), _shm_size, _shm_rank); ic<end(olevel.n_node(), _shm_size, _shm_rank); ++ic) {
+        for (int ic=begin(olevel.n_node(), _size, _rank); ic<end(olevel.n_node(), _size, _rank); ++ic) {
             const auto& [ip, cc] = plist[ic];
             L2Lc(lc, cc, Lp[ip], Lc[ic]);
         }
@@ -543,8 +539,7 @@ public:
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& indices = olevel.indices();
 
-        L.sync();
-        for (int i_leaf=begin(olevel.n_leaf(), _shm_size, _shm_rank); i_leaf<end(olevel.n_leaf(), _shm_size, _shm_rank); ++i_leaf) {
+        for (int i_leaf=begin(olevel.n_leaf(), _size, _rank); i_leaf<end(olevel.n_leaf(), _size, _rank); ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
@@ -561,7 +556,7 @@ public:
     {
         static_assert(support_gradient || !gradient);
 
-        for (int i=begin(_n_particle, _shm_size, _shm_rank); i<end(_n_particle, _shm_size, _shm_rank); ++i) {
+        for (int i=begin(_n_particle, _size, _rank); i<end(_n_particle, _size, _rank); ++i) {
             const auto& [li, i_leaf] = _partitioner.get_partition(i);
             const auto& nlist = _partitioner.octreeLevel(li).nlist();
             for (int inz=0; inz<nlist.nnz(i_leaf); ++inz) {
@@ -611,9 +606,15 @@ public:
         tic("N2M2M");
         N2M<gradient>(level, Q, _M[level]);
         for (int l=level - 1; l>=minimum_level; --l) {
+            _M[l + 1].sync();
+            _M[l + 1].template allreduce<T>();
+            _M[l + 1].sync();
             M2M(l, _M[l + 1], _M[l]);
             N2M<gradient>(l, Q, _M[l]);
         }
+        _M[minimum_level].sync();
+        _M[minimum_level].template allreduce<T>();
+        _M[minimum_level].sync();
         toc("N2M2M");
 
         tic("M2L");
@@ -624,9 +625,15 @@ public:
 
         tic("L2L2N");
         for (int l=minimum_level; l<level; ++l) {
+            _L[l].sync();
+            _L[l].template allreduce<T>();
+            _L[l].sync();
             L2N(l, _L[l], U);
             L2L(l + 1, _L[l], _L[l + 1]);
         }
+        _L[level].sync();
+        _L[level].template allreduce<T>();
+        _L[level].sync();
         L2N(level, _L[level], U);
         toc("L2L2N");
     }

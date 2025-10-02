@@ -191,11 +191,18 @@ public:
         if (_data.root() && _data.data()) {
             std::fill_n(_data.data(), _data.size(), T{});
         }
+        sync();
     }
 
     inline void sync() const noexcept
     {
         _data.sync();
+    }
+
+    template<typename U>
+    inline void allreduce(MPI_Op op=MPI_SUM) const noexcept
+    {
+        _data.template allreduce<U>(op);
     }
 
     template<typename index_t>
