@@ -596,6 +596,10 @@ public:
 
         const int level = _partitioner.level();
 
+        if (level < minimum_level) {
+            return;
+        }
+
         for (auto& M: _M) {
             M.initialize();
         }

@@ -52,9 +52,8 @@ inline void allgatherv_inplace(int count, MPI_Datatype type, void* recvbuf, MPI_
 template<typename T>
 class svector {
 private:
-    const MPI_Comm _intracomm;
-    const MPI_Comm _intercomm;
-
+    MPI_Comm _intracomm = MPI_COMM_NULL;
+    MPI_Comm _intercomm = MPI_COMM_NULL;
     MPI_Win _window = MPI_WIN_NULL;
     T* _data = nullptr;
     size_t _size = 0;
@@ -100,6 +99,8 @@ public:
         _data{other._data},
         _size{other._size}
     {
+        other._intracomm = MPI_COMM_NULL;
+        other._intercomm = MPI_COMM_NULL;
         other._window = MPI_WIN_NULL;
         other._data = nullptr;
         other._size = 0;
@@ -109,8 +110,20 @@ public:
     {
         int flag;
         MPI_Finalized(&flag);
-        if (!flag && _window != MPI_WIN_NULL) {
+        if (flag) {
+            return;
+        }
+
+        if (_window != MPI_WIN_NULL) {
             MPI_Win_free(&_window);
+        }
+
+        if (_intracomm != MPI_COMM_NULL) {
+            MPI_Comm_free(&_intracomm);
+        }
+
+        if (_intercomm != MPI_COMM_NULL) {
+            MPI_Comm_free(&_intercomm);
         }
     }
 
@@ -136,6 +149,12 @@ public:
 
     void reserve(size_t size) noexcept
     {
+        if (_window != MPI_WIN_NULL) {
+            MPI_Win_free(&_window);
+            _window = MPI_WIN_NULL;
+            _data = nullptr;
+        }
+
         MPI_Win_allocate_shared(
             root() ? sizeof(T)*size : 0,
             sizeof(T),
@@ -187,6 +206,10 @@ public:
 
     inline void sync() const noexcept
     {
+        if (_window == MPI_WIN_NULL) {
+            return;
+        }
+
         MPI_Win_sync(_window);
         MPI_Barrier(_intracomm);
     }
