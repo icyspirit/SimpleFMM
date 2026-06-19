@@ -6,8 +6,11 @@
 #include "mpi_util.hpp"
 #include <mpi.h>
 #include <algorithm>
+#include <climits>
 #include <cstddef>
 #include <cstring>
+#include <stdexcept>
+#include <vector>
 
 
 template<typename I>
@@ -36,16 +39,16 @@ inline void allgatherv_inplace(int count, MPI_Datatype type, void* recvbuf, MPI_
     int size;
     MPI_Comm_size(comm, &size);
 
-    int recvcounts[size];
-    int displs[size];
+    std::vector<int> recvcounts(size);
+    std::vector<int> displs(size);
 
-    MPI_Allgather(&count, 1, MPI_INT, recvcounts, 1, MPI_INT, comm);
+    MPI_Allgather(&count, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, comm);
     displs[0] = 0;
     for (int rank=1; rank<size; ++rank) {
         displs[rank] = displs[rank - 1] + recvcounts[rank - 1];
     }
 
-    MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, recvbuf, recvcounts, displs, type, comm);
+    MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, recvbuf, recvcounts.data(), displs.data(), type, comm);
 }
 
 
@@ -224,7 +227,12 @@ public:
     inline void allreduce(MPI_Op op=MPI_SUM) const noexcept
     {
         if (root()) {
-            MPI_Allreduce(MPI_IN_PLACE, _data, sizeof(T)/sizeof(U)*_size, get_mpi_type<U>(), op, _intercomm);
+            const size_t count = sizeof(T)/sizeof(U)*_size;
+            // MPI_Allreduce `count` is int; fail loudly rather than narrow silently.
+            if (count > static_cast<size_t>(INT_MAX)) {
+                throw std::overflow_error("svector::allreduce: MPI count exceeds INT_MAX");
+            }
+            MPI_Allreduce(MPI_IN_PLACE, _data, count, get_mpi_type<U>(), op, _intercomm);
         }
     }
 };

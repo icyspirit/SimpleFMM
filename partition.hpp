@@ -21,7 +21,7 @@
 #include <iostream>
 
 
-std::vector<int> range(int begin, int end) noexcept
+inline std::vector<int> range(int begin, int end) noexcept
 {
     std::vector<int> ret(end - begin);
     std::iota(ret.begin(), ret.end(), begin);

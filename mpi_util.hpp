@@ -90,7 +90,7 @@ inline int get_node_rank()
 }
 
 
-MPI_Comm get_split_comm(MPI_Comm comm, int color, int key)
+inline MPI_Comm get_split_comm(MPI_Comm comm, int color, int key)
 {
     MPI_Comm new_comm;
     MPI_Comm_split(comm, color, key, &new_comm);
@@ -106,21 +106,21 @@ MPI_Datatype get_mpi_type()
 
 
 template<>
-MPI_Datatype get_mpi_type<int>()
+inline MPI_Datatype get_mpi_type<int>()
 {
     return MPI_INT;
 }
 
 
 template<>
-MPI_Datatype get_mpi_type<int64_t>()
+inline MPI_Datatype get_mpi_type<int64_t>()
 {
     return MPI_INT64_T;
 }
 
 
 template<>
-MPI_Datatype get_mpi_type<size_t>()
+inline MPI_Datatype get_mpi_type<size_t>()
 {
 #if SIZE_MAX == UCHAR_MAX
     return MPI_UNSIGNED_CHAR;
@@ -139,14 +139,14 @@ MPI_Datatype get_mpi_type<size_t>()
 
 
 template<>
-MPI_Datatype get_mpi_type<float>()
+inline MPI_Datatype get_mpi_type<float>()
 {
     return MPI_FLOAT;
 }
 
 
 template<>
-MPI_Datatype get_mpi_type<double>()
+inline MPI_Datatype get_mpi_type<double>()
 {
     return MPI_DOUBLE;
 }
