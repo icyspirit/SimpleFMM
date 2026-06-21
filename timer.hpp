@@ -14,10 +14,10 @@ using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::nanoseconds;
 
-static std::unordered_map<std::string, high_resolution_clock::time_point> _map;
+inline std::unordered_map<std::string, high_resolution_clock::time_point> _map;
 
 
-void tic(const std::string& name) noexcept
+inline void tic(const std::string& name) noexcept
 {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -29,7 +29,7 @@ void tic(const std::string& name) noexcept
     }
 }
 
-void toc(const std::string& name) noexcept
+inline void toc(const std::string& name) noexcept
 {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);

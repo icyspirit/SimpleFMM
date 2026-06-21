@@ -83,18 +83,13 @@ struct Int3 {
 
     friend inline bool operator <(const Int3& lhs, const Int3& rhs) noexcept
     {
-        if (lhs.k < rhs.k) {
-            return true;
-        } else {
-            if (lhs.j < rhs.j) {
-                return true;
-            } else {
-                if (lhs.i < rhs.i) {
-                    return true;
-                }
-            }
+        if (lhs.k != rhs.k) {
+            return lhs.k < rhs.k;
         }
-        return false;
+        if (lhs.j != rhs.j) {
+            return lhs.j < rhs.j;
+        }
+        return lhs.i < rhs.i;
     }
 
 #ifndef NDEBUG
