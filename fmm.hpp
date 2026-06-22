@@ -86,7 +86,6 @@ inline constexpr int isqrt(int n) noexcept
 
 inline constexpr int nposm2i(int n, int m) noexcept
 {
-    assert(n >= absi(m));
     return n*(n + 1)/2 + absi(m);
 }
 
