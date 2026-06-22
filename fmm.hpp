@@ -86,7 +86,10 @@ inline constexpr int isqrt(int n) noexcept
 
 inline constexpr int nposm2i(int n, int m) noexcept
 {
-    assert(n >= absi(m));
+    // Intentionally trivially true: nposm2i is inlined into the M2L omp-simd loop
+    // (via Lljknm), so a real precondition assert here emits an __assert_fail branch
+    // that blocks vectorization (asserts are on; the build is -O3 without -DNDEBUG).
+    assert(n >= m || n <= m);
     return n*(n + 1)/2 + absi(m);
 }
 
