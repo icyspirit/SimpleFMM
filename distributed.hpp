@@ -224,7 +224,7 @@ public:
     }
 
     template<typename U>
-    inline void allreduce(MPI_Op op=MPI_SUM) const noexcept
+    inline void allreduce(MPI_Op op=MPI_SUM) const
     {
         if (root()) {
             const size_t count = sizeof(T)/sizeof(U)*_size;
