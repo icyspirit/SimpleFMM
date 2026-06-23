@@ -582,7 +582,7 @@ public:
                 } else {
                     static_assert(N == 3);
                     const auto R = _positions[i] - _positions[j];
-                    U[i] += Q[j].cross(R)/std::pow(R.norm(), static_cast<T>(3));
+                    U[i] -= Q[j].cross(R)/std::pow(R.norm(), static_cast<T>(3));
                 }
             }
         }
