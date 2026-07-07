@@ -111,7 +111,7 @@ inline T Z(int n, int m, T theta) noexcept
 }
 
 
-inline long double wigner_d(int n, int a, int b, long double beta,
+inline long double wigner_d(int n, int a, int b,
                             const long double* lf, const long double* cbp, const long double* sbp) noexcept
 {
     const long double pref = 0.5L*(lf[n + a] + lf[n - a] + lf[n + b] + lf[n - b]);
@@ -368,7 +368,7 @@ public:
                     for (int a=-n; a<=n; ++a) {
                         for (int b=-n; b<=n; ++b) {
                             R[_rot_off[n] + (a + n)*(2*n + 1) + (b + n)] =
-                                sgn(a)*sgn(b)*wigner_d(n, a, b, -theta, lf, cbp, sbp);
+                                sgn(a)*sgn(b)*wigner_d(n, a, b, lf, cbp, sbp);
                         }
                     }
                 }
