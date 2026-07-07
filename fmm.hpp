@@ -145,6 +145,11 @@ private:
 
     std::array<int, nm2i(p, p) + 1> _i2n;
     std::array<int, nm2i(p, p) + 1> _i2m;
+    avector<T> _m2l_cu;
+    avector<T> _m2l_cl;
+    avector<int> _m2l_zi;
+    avector<int> _m2l_q;
+    avector<int> _m2l_pw;
     CSRP<> _slist;
 
     mutable std::vector<LevelData<std::array<Vector<std::complex<T>, N>, nm2i(p, p) + 1>>> _M;
@@ -276,6 +281,28 @@ public:
                 _i2n[i] = n;
                 _i2m[i] = m;
                 ++i;
+            }
+        }
+
+        constexpr std::size_t n_m2l_term = static_cast<std::size_t>(nm2i(p, p) + 1)*(nm2i(p, p) + 1);
+        _m2l_cu.resize(n_m2l_term);
+        _m2l_cl.resize(n_m2l_term);
+        _m2l_zi.resize(n_m2l_term);
+        _m2l_q.resize(n_m2l_term);
+        _m2l_pw.resize(n_m2l_term);
+        for (int jk=0; jk<=nm2i(p, p); ++jk) {
+            const int j = _i2n[jk];
+            const int k = _i2m[jk];
+            for (int nm=0; nm<=nm2i(p, p); ++nm) {
+                const int n = _i2n[nm];
+                const int m = _i2m[nm];
+                const std::size_t idx = static_cast<std::size_t>(jk)*(nm2i(p, p) + 1) + nm;
+                _m2l_cu[idx] = pow1(fkm(k - m, k) + n)*
+                               _A[nposm2i(n, m)]*_A[nposm2i(j, k)]/_A[nposm2i(j + n, m - k)];
+                _m2l_cl[idx] = _m2l_cu[idx]*pow1((j + n) - (m - k));
+                _m2l_zi[idx] = nposm2i(j + n, m - k);
+                _m2l_q[idx] = (m - k) + 2*p;
+                _m2l_pw[idx] = j + n;
             }
         }
 
@@ -437,45 +464,16 @@ public:
         }
     }
 
-    template<int nm, typename ClusterData_t>
-    __attribute__((always_inline)) static auto Lljknm(
-        const T* A,
-        const T* powrho,
-        const std::complex<T>* expphi,
-        const T* Zi,
-        bool upper,
-        int j,
-        int k,
-        const ClusterData_t& Ml) noexcept
-    {
-        static constexpr int n = isqrt<p>(nm);
-        static constexpr int m = nm - nm2i(n, 0);
-        const T v = (upper ? 1 : pow1((j + n) - (m - k)))*pow1(fkm(k - m, k) + n)*
-                    A[nposm2i(n, m)]*A[nposm2i(j, k)]/A[nposm2i(j + n, m - k)]*
-                    powrho[j + n]*Zi[nposm2i(j + n, m - k)];
-        return v*expphi[(m - k) + 2*p]*Ml[nm];
-    }
-
-    template<int... nm, typename ClusterData_t>
-    __attribute__((always_inline)) static auto Lljk(
-        const T* A,
-        const T* powrho,
-        const std::complex<T>* expphi,
-        const T* Zi,
-        bool upper,
-        int j,
-        int k,
-        const ClusterData_t& Ml,
-        std::integer_sequence<int, nm...>) noexcept
-    {
-        return (Lljknm<nm>(A, powrho, expphi, Zi, upper, j, k, Ml) + ...);
-    }
-
     template<typename Int3_t, typename ClusterData_t>
     void M2Lc(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
     {
         const T rho = _width/(1 << l)*std::sqrt(static_cast<T>(dijk.i*dijk.i + dijk.j*dijk.j + dijk.k*dijk.k));
-        const std::complex<T>* expphi = get_expphi_of_other(dijk).data();
+        const std::complex<T>* __restrict expphi = get_expphi_of_other(dijk).data();
+        const T* __restrict Zi = get_Z_of_other(dijk).data();
+        const T* __restrict coef = (dijk.k >= 0 ? _m2l_cu : _m2l_cl).data();
+        const int* __restrict zi = _m2l_zi.data();
+        const int* __restrict qi = _m2l_q.data();
+        const int* __restrict pw = _m2l_pw.data();
 
         alignas(64) T powrho[2*p + 1];
         powrho[0] = 1/rho;
@@ -483,12 +481,15 @@ public:
             powrho[i + 1] = powrho[i]/rho;
         }
 
-        #pragma omp simd
         for (int jk=0; jk<=nm2i(p, p); ++jk) {
-            const int j = _i2n[jk];
-            const int k = _i2m[jk];
-            Ll[jk] += Lljk(_A.data(), powrho, expphi, get_Z_of_other(dijk).data(), dijk.k >= 0, j, k, Ml,
-                           std::make_integer_sequence<int, nm2i(p, p) + 1>{});
+            const std::size_t base = static_cast<std::size_t>(jk)*(nm2i(p, p) + 1);
+            Vector<std::complex<T>, N> acc{};
+            #pragma omp simd
+            for (int nm=0; nm<=nm2i(p, p); ++nm) {
+                const T v = coef[base + nm]*powrho[pw[base + nm]]*Zi[zi[base + nm]];
+                acc += v*expphi[qi[base + nm]]*Ml[nm];
+            }
+            Ll[jk] += acc;
         }
     }
 
