@@ -140,6 +140,7 @@ private:
 
     std::array<T, nposm2i(p, p) + 1> _Z_near_positive;
     std::array<std::array<T, nposm2i(2*p, 2*p) + 1>, 64> _Z_ilist_positive;
+    std::array<std::array<std::complex<T>, 4*p + 1>, 49> _expphi_ilist;
     avector<T> _A;
 
     std::array<int, nm2i(p, p) + 1> _i2n;
@@ -253,6 +254,15 @@ public:
             }
         }
 
+        for (int j=-3; j<=3; ++j) {
+            for (int i=-3; i<=3; ++i) {
+                const T phi = std::atan2(static_cast<T>(j), static_cast<T>(i));
+                for (int q=-2*p; q<=2*p; ++q) {
+                    _expphi_ilist[7*(j + 3) + (i + 3)][q + 2*p] = std::polar(static_cast<T>(1), q*phi);
+                }
+            }
+        }
+
         _A.resize(nposm2i(2*p, 2*p) + 1);
         for (int n=0; n<=2*p; ++n) {
             for (int m=0; m<=n; ++m) {
@@ -357,6 +367,12 @@ public:
         return _Z_ilist_positive[16*absi(dijk.k) + 4*absi(dijk.j) + absi(dijk.i)];
     }
 
+    template<typename Int3_t>
+    inline auto& get_expphi_of_other(const Int3_t& dijk) const noexcept
+    {
+        return _expphi_ilist[7*(dijk.j + 3) + (dijk.i + 3)];
+    }
+
     inline T get_A(int n, int m) const noexcept
     {
         return _A[nposm2i(n, m)];
@@ -425,7 +441,7 @@ public:
     __attribute__((always_inline)) static auto Lljknm(
         const T* A,
         const T* powrho,
-        T phi,
+        const std::complex<T>* expphi,
         const T* Zi,
         bool upper,
         int j,
@@ -437,14 +453,14 @@ public:
         const T v = (upper ? 1 : pow1((j + n) - (m - k)))*pow1(fkm(k - m, k) + n)*
                     A[nposm2i(n, m)]*A[nposm2i(j, k)]/A[nposm2i(j + n, m - k)]*
                     powrho[j + n]*Zi[nposm2i(j + n, m - k)];
-        return std::polar(v, (m - k)*phi)*Ml[nm];
+        return v*expphi[(m - k) + 2*p]*Ml[nm];
     }
 
     template<int... nm, typename ClusterData_t>
     __attribute__((always_inline)) static auto Lljk(
         const T* A,
         const T* powrho,
-        T phi,
+        const std::complex<T>* expphi,
         const T* Zi,
         bool upper,
         int j,
@@ -452,14 +468,14 @@ public:
         const ClusterData_t& Ml,
         std::integer_sequence<int, nm...>) noexcept
     {
-        return (Lljknm<nm>(A, powrho, phi, Zi, upper, j, k, Ml) + ...);
+        return (Lljknm<nm>(A, powrho, expphi, Zi, upper, j, k, Ml) + ...);
     }
 
     template<typename Int3_t, typename ClusterData_t>
     void M2Lc(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
     {
         const T rho = _width/(1 << l)*std::sqrt(static_cast<T>(dijk.i*dijk.i + dijk.j*dijk.j + dijk.k*dijk.k));
-        const T phi = std::atan2(static_cast<T>(dijk.j), static_cast<T>(dijk.i));
+        const std::complex<T>* expphi = get_expphi_of_other(dijk).data();
 
         alignas(64) T powrho[2*p + 1];
         powrho[0] = 1/rho;
@@ -468,19 +484,10 @@ public:
         }
 
         #pragma omp simd
-        /*
-        for (int j=0; j<=p; ++j) {
-            for (int k=-j; k<=j; ++k) {
-                const int jk = nm2i(j, k);
-                Ll[jk] += Lljk(_A.data(), powrho, phi, get_Z_of_other(dijk).data(), dijk.k >= 0, j, k, Ml,
-                               std::make_integer_sequence<int, nm2i(p, p) + 1>{});
-            }
-        }
-        */
         for (int jk=0; jk<=nm2i(p, p); ++jk) {
             const int j = _i2n[jk];
             const int k = _i2m[jk];
-            Ll[jk] += Lljk(_A.data(), powrho, phi, get_Z_of_other(dijk).data(), dijk.k >= 0, j, k, Ml,
+            Ll[jk] += Lljk(_A.data(), powrho, expphi, get_Z_of_other(dijk).data(), dijk.k >= 0, j, k, Ml,
                            std::make_integer_sequence<int, nm2i(p, p) + 1>{});
         }
     }
