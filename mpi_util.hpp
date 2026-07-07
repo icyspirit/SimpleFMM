@@ -68,23 +68,28 @@ inline int get_shm_rank()
 }
 
 
+// Collective over MPI_COMM_WORLD on first call, like get_shm_comm().
 inline int get_node_size()
 {
     static int node_size = MPI_UNDEFINED;
     if (node_size == MPI_UNDEFINED) {
-        assert(get_size()%get_shm_size() == 0);
-        node_size = get_size()/get_shm_size();
+        const int is_root = get_shm_rank() == 0 ? 1 : 0;
+        MPI_Allreduce(&is_root, &node_size, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     }
     return node_size;
 }
 
 
+// Collective over MPI_COMM_WORLD on first call, like get_shm_comm().
 inline int get_node_rank()
 {
     static int node_rank = MPI_UNDEFINED;
     if (node_rank == MPI_UNDEFINED) {
-        assert(get_size()%get_shm_size() == 0);
-        node_rank = get_rank()/get_shm_size();
+        const int is_root = get_shm_rank() == 0 ? 1 : 0;
+        int n_root_upto = 0;
+        MPI_Scan(&is_root, &n_root_upto, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        node_rank = n_root_upto - 1;
+        MPI_Bcast(&node_rank, 1, MPI_INT, 0, get_shm_comm());
     }
     return node_rank;
 }
