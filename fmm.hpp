@@ -490,6 +490,27 @@ public:
         return _A[nposm2i(n, m)];
     }
 
+    // Split [0, n_leaf) so ranks get similar particle counts rather than leaf counts.
+    static std::pair<int, int> balanced_leaf_range(const CSRP<>& indices, int n_leaf, int size, int rank) noexcept
+    {
+        const long long total = indices.nnz();
+        const auto cut = [&](long long target) noexcept {
+            int lo = 0;
+            int hi = n_leaf;
+            while (lo < hi) {
+                const int mid = (lo + hi)/2;
+                if (indices.nnz(0, mid) < target) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            return lo;
+        };
+
+        return {cut(begin(total, size, rank)), cut(end(total, size, rank))};
+    }
+
     template<bool gradient=false, typename LevelData_t>
     void N2M(int l, const Vector<T, N>* Q, LevelData_t& M) const noexcept
     {
@@ -498,7 +519,8 @@ public:
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& indices = olevel.indices();
 
-        for (int i_leaf=begin(olevel.n_leaf(), _size, _rank); i_leaf<end(olevel.n_leaf(), _size, _rank); ++i_leaf) {
+        const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+        for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
@@ -713,7 +735,8 @@ public:
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& indices = olevel.indices();
 
-        for (int i_leaf=begin(olevel.n_leaf(), _size, _rank); i_leaf<end(olevel.n_leaf(), _size, _rank); ++i_leaf) {
+        const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+        for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
@@ -725,8 +748,8 @@ public:
         }
     }
 
-    template<bool gradient=false>
-    void N2N(const Vector<T, N>* Q, Vector<T, N>* U, const std::function<bool(int, int)>& is_self) const noexcept
+    template<bool gradient=false, typename IsSelf>
+    void N2N(const Vector<T, N>* Q, Vector<T, N>* U, const IsSelf& is_self) const noexcept
     {
         static_assert(support_gradient || !gradient);
 
@@ -816,8 +839,8 @@ public:
         toc("L2L2N");
     }
 
-    template<bool gradient=false>
-    void rinv(const Vector<T, N>* Q, Vector<T, N>* U, const std::function<bool(int, int)>& is_self) const noexcept
+    template<bool gradient=false, typename IsSelf>
+    void rinv(const Vector<T, N>* Q, Vector<T, N>* U, const IsSelf& is_self) const noexcept
     {
         static_assert(support_gradient || !gradient);
 
