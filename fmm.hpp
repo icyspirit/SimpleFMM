@@ -111,6 +111,20 @@ inline T Z(int n, int m, T theta) noexcept
 }
 
 
+inline long double wigner_d(int n, int a, int b, long double beta,
+                            const long double* lf, const long double* cbp, const long double* sbp) noexcept
+{
+    const long double pref = 0.5L*(lf[n + a] + lf[n - a] + lf[n + b] + lf[n - b]);
+    long double sum = 0;
+    for (int t=std::max(0, b - a); t<=std::min(n + b, n - a); ++t) {
+        const long double term = std::exp(pref - lf[n + b - t] - lf[t] - lf[a - b + t] - lf[n - a - t])*
+                                 cbp[2*n + b - a - 2*t]*sbp[a - b + 2*t];
+        sum += (a - b + t)%2 == 0 ? term : -term;
+    }
+    return sum;
+}
+
+
 inline int fkm(int k, int m) noexcept
 {
     return (absi(k) - absi(m) - absi(k - m)) >> 1;
@@ -141,35 +155,49 @@ private:
     std::array<T, nposm2i(p, p) + 1> _Z_near_positive;
     std::array<std::array<T, nposm2i(2*p, 2*p) + 1>, 64> _Z_ilist_positive;
     std::array<std::array<std::complex<T>, 4*p + 1>, 49> _expphi_ilist;
+    std::array<std::array<std::complex<T>, 2*p + 1>, 4> _expphi_child;
+    std::array<std::array<std::complex<T>, 2*p + 1>, 4> _expphi_parent;
     avector<T> _A;
 
     std::array<int, nm2i(p, p) + 1> _i2n;
     std::array<int, nm2i(p, p) + 1> _i2m;
+    avector<T> _m2l_cu;
+    avector<T> _m2l_cl;
+    avector<int> _m2l_zi;
+    avector<int> _m2l_q;
+    avector<int> _m2l_pw;
+    static constexpr int n_rot_class = 70;
+    static constexpr int n_rot = (p + 1)*(2*p + 1)*(2*p + 3)/3;
+    static constexpr std::array<int, 19> _t2i{0, 1, 2, -1, 3, 4, -1, -1, 5, 6, 7, -1, -1, 8, -1, -1, -1, -1, 9};
+    std::array<int, p + 1> _rot_off;
+    avector<T> _rot;
+    std::array<int, 2*p + 1> _tz_off;
+    avector<T> _tz;
     CSRP<> _slist;
 
     mutable std::vector<LevelData<std::array<Vector<std::complex<T>, N>, nm2i(p, p) + 1>>> _M;
     mutable std::vector<LevelData<std::array<Vector<std::complex<T>, N>, nm2i(p, p) + 1>>> _L;
 
     template<size_t... I>
-    inline static Vector<std::complex<T>, N> r2c_impl(const Vector<T, N>& r, T theta, std::index_sequence<I...>) noexcept
+    inline static Vector<std::complex<T>, N> r2c_impl(const Vector<T, N>& r, std::complex<T> e, std::index_sequence<I...>) noexcept
     {
-        return {std::polar(r[I], theta)...};
+        return {r[I]*e...};
     }
 
-    inline static Vector<std::complex<T>, N> r2c(const Vector<T, N>& r, T theta) noexcept
+    inline static Vector<std::complex<T>, N> r2c(const Vector<T, N>& r, std::complex<T> e) noexcept
     {
-        return r2c_impl(r, theta, std::make_index_sequence<N>{});
+        return r2c_impl(r, e, std::make_index_sequence<N>{});
     }
 
     template<size_t... I>
-    inline static Vector<T, N> c2r_impl(const Vector<std::complex<T>, N>& c, T theta, std::index_sequence<I...>) noexcept
+    inline static Vector<T, N> c2r_impl(const Vector<std::complex<T>, N>& c, std::complex<T> e, std::index_sequence<I...>) noexcept
     {
-        return {(c[I].real()*std::cos(theta) - c[I].imag()*std::sin(theta))...};
+        return {(c[I].real()*e.real() - c[I].imag()*e.imag())...};
     }
 
-    inline static Vector<T, N> c2r(const Vector<std::complex<T>, N>& c, T theta) noexcept
+    inline static Vector<T, N> c2r(const Vector<std::complex<T>, N>& c, std::complex<T> e) noexcept
     {
-        return c2r_impl(c, theta, std::make_index_sequence<N>{});
+        return c2r_impl(c, e, std::make_index_sequence<N>{});
     }
 
 public:
@@ -263,6 +291,13 @@ public:
             }
         }
 
+        for (int c=0; c<4; ++c) {
+            for (int q=-p; q<=p; ++q) {
+                _expphi_child[c][q + p] = std::polar(static_cast<T>(1), q*get_phi_of_child(c));
+                _expphi_parent[c][q + p] = std::polar(static_cast<T>(1), q*get_phi_of_parent(c));
+            }
+        }
+
         _A.resize(nposm2i(2*p, 2*p) + 1);
         for (int n=0; n<=2*p; ++n) {
             for (int m=0; m<=n; ++m) {
@@ -276,6 +311,86 @@ public:
                 _i2n[i] = n;
                 _i2m[i] = m;
                 ++i;
+            }
+        }
+
+        constexpr std::size_t n_m2l_term = static_cast<std::size_t>(nm2i(p, p) + 1)*(nm2i(p, p) + 1);
+        _m2l_cu.resize(n_m2l_term);
+        _m2l_cl.resize(n_m2l_term);
+        _m2l_zi.resize(n_m2l_term);
+        _m2l_q.resize(n_m2l_term);
+        _m2l_pw.resize(n_m2l_term);
+        for (int jk=0; jk<=nm2i(p, p); ++jk) {
+            const int j = _i2n[jk];
+            const int k = _i2m[jk];
+            for (int nm=0; nm<=nm2i(p, p); ++nm) {
+                const int n = _i2n[nm];
+                const int m = _i2m[nm];
+                const std::size_t idx = static_cast<std::size_t>(jk)*(nm2i(p, p) + 1) + nm;
+                _m2l_cu[idx] = pow1(fkm(k - m, k) + n)*
+                               _A[nposm2i(n, m)]*_A[nposm2i(j, k)]/_A[nposm2i(j + n, m - k)];
+                _m2l_cl[idx] = _m2l_cu[idx]*pow1((j + n) - (m - k));
+                _m2l_zi[idx] = nposm2i(j + n, m - k);
+                _m2l_q[idx] = (m - k) + 2*p;
+                _m2l_pw[idx] = j + n;
+            }
+        }
+
+        _rot_off[0] = 0;
+        for (int n=1; n<=p; ++n) {
+            _rot_off[n] = _rot_off[n - 1] + (2*n - 1)*(2*n - 1);
+        }
+
+        const auto sgn = [](int m) noexcept { return m < 0 ? pow1(m) : 1; };
+
+        long double lf[2*p + 2];
+        for (int n=0; n<2*p + 2; ++n) {
+            lf[n] = std::lgamma(static_cast<long double>(n) + 1);
+        }
+
+        _rot.resize(static_cast<std::size_t>(n_rot_class)*n_rot);
+        constexpr std::array<int, 10> tvals{0, 1, 2, 4, 5, 8, 9, 10, 13, 18};
+        for (int ti=0; ti<10; ++ti) {
+            for (int dk=-3; dk<=3; ++dk) {
+                if (tvals[ti] == 0 && dk == 0) {
+                    continue;
+                }
+                const long double theta = std::acos(dk/std::sqrt(static_cast<long double>(tvals[ti] + dk*dk)));
+                long double cbp[2*p + 1], sbp[2*p + 1];
+                cbp[0] = 1;
+                sbp[0] = 1;
+                for (int e=0; e<2*p; ++e) {
+                    cbp[e + 1] = cbp[e]*std::cos(-theta/2);
+                    sbp[e + 1] = sbp[e]*std::sin(-theta/2);
+                }
+                T* R = _rot.data() + static_cast<std::size_t>(7*ti + dk + 3)*n_rot;
+                for (int n=0; n<=p; ++n) {
+                    for (int a=-n; a<=n; ++a) {
+                        for (int b=-n; b<=n; ++b) {
+                            R[_rot_off[n] + (a + n)*(2*n + 1) + (b + n)] =
+                                sgn(a)*sgn(b)*wigner_d(n, a, b, -theta, lf, cbp, sbp);
+                        }
+                    }
+                }
+            }
+        }
+
+        {
+            int off = 0;
+            for (int k=-p; k<=p; ++k) {
+                _tz_off[k + p] = off;
+                off += (p + 1 - absi(k))*(p + 1 - absi(k));
+            }
+            _tz.resize(off);
+            for (int k=-p; k<=p; ++k) {
+                const int ak = absi(k);
+                const int w = p + 1 - ak;
+                for (int j=ak; j<=p; ++j) {
+                    for (int n=ak; n<=p; ++n) {
+                        _tz[_tz_off[k + p] + (j - ak)*w + (n - ak)] =
+                            pow1(n + ak)*_A[nposm2i(n, ak)]*_A[nposm2i(j, ak)]/_A[nposm2i(j + n, 0)];
+                    }
+                }
             }
         }
 
@@ -373,6 +488,12 @@ public:
         return _expphi_ilist[7*(dijk.j + 3) + (dijk.i + 3)];
     }
 
+    template<typename Int3_t>
+    inline int rot_class(const Int3_t& dijk) const noexcept
+    {
+        return 7*_t2i[dijk.i*dijk.i + dijk.j*dijk.j] + (dijk.k + 3);
+    }
+
     inline T get_A(int n, int m) const noexcept
     {
         return _A[nposm2i(n, m)];
@@ -412,10 +533,19 @@ public:
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
+                std::array<std::complex<T>, p + 1> E;
+                if constexpr (!gradient) {
+                    const std::complex<T> estep{std::cos(_phi[i]), -std::sin(_phi[i])};
+                    E[0] = 1;
+                    for (int m=1; m<=p; ++m) {
+                        E[m] = E[m - 1]*estep;
+                    }
+                }
                 #pragma omp simd
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
                     if constexpr (!gradient) {
-                        M[i_node][nm] += r2c(Q[i]*_Zrho[i][nm], -_i2m[nm]*_phi[i]);
+                        const int m = _i2m[nm];
+                        M[i_node][nm] += r2c(Q[i]*_Zrho[i][nm], m >= 0 ? E[m] : std::conj(E[-m]));
                     } else {
                         static_assert(N == 3);
                         M[i_node][nm] += Vector<std::complex<T>, N>{Q[i][0], Q[i][1], Q[i][2]}.cross(_Zgrho[i][nm]);
@@ -429,7 +559,7 @@ public:
     void M2Mc(int lc, zindex_t cc, const ClusterData_t& Mc, ClusterData_t& Mp) const noexcept
     {
         const T rho = std::sqrt(static_cast<T>(0.75))*_width/(1 << lc);
-        const T phi = get_phi_of_child(cc);
+        const std::complex<T>* __restrict ephi = _expphi_child[cc%4].data();
 
         for (int j=0; j<=p; ++j) {
             for (int k=-j; k<=j; ++k) {
@@ -437,7 +567,7 @@ public:
                 for (int n=0; n<=j; ++n) {
                     for (int m=std::max(-n, k - (j - n)); m<=std::min(n, k + (j - n)); ++m) {
                         const T v = pow1(fkm(k, m))*get_A(n, m)*get_A(j - n, k - m)/get_A(j, k)*rhopn*get_Z_of_child(cc, n, -m);
-                        Mp[nm2i(j, k)] += std::polar(v, -m*phi)*Mc[nm2i(j - n, k - m)];
+                        Mp[nm2i(j, k)] += v*ephi[p - m]*Mc[nm2i(j - n, k - m)];
                     }
                     rhopn *= rho;
                 }
@@ -459,45 +589,16 @@ public:
         }
     }
 
-    template<int nm, typename ClusterData_t>
-    __attribute__((always_inline)) static auto Lljknm(
-        const T* A,
-        const T* powrho,
-        const std::complex<T>* expphi,
-        const T* Zi,
-        bool upper,
-        int j,
-        int k,
-        const ClusterData_t& Ml) noexcept
-    {
-        static constexpr int n = isqrt<p>(nm);
-        static constexpr int m = nm - nm2i(n, 0);
-        const T v = (upper ? 1 : pow1((j + n) - (m - k)))*pow1(fkm(k - m, k) + n)*
-                    A[nposm2i(n, m)]*A[nposm2i(j, k)]/A[nposm2i(j + n, m - k)]*
-                    powrho[j + n]*Zi[nposm2i(j + n, m - k)];
-        return v*expphi[(m - k) + 2*p]*Ml[nm];
-    }
-
-    template<int... nm, typename ClusterData_t>
-    __attribute__((always_inline)) static auto Lljk(
-        const T* A,
-        const T* powrho,
-        const std::complex<T>* expphi,
-        const T* Zi,
-        bool upper,
-        int j,
-        int k,
-        const ClusterData_t& Ml,
-        std::integer_sequence<int, nm...>) noexcept
-    {
-        return (Lljknm<nm>(A, powrho, expphi, Zi, upper, j, k, Ml) + ...);
-    }
-
     template<typename Int3_t, typename ClusterData_t>
-    void M2Lc(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
+    void M2Lc_direct(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
     {
         const T rho = _width/(1 << l)*std::sqrt(static_cast<T>(dijk.i*dijk.i + dijk.j*dijk.j + dijk.k*dijk.k));
-        const std::complex<T>* expphi = get_expphi_of_other(dijk).data();
+        const std::complex<T>* __restrict expphi = get_expphi_of_other(dijk).data();
+        const T* __restrict Zi = get_Z_of_other(dijk).data();
+        const T* __restrict coef = (dijk.k >= 0 ? _m2l_cu : _m2l_cl).data();
+        const int* __restrict zi = _m2l_zi.data();
+        const int* __restrict qi = _m2l_q.data();
+        const int* __restrict pw = _m2l_pw.data();
 
         alignas(64) T powrho[2*p + 1];
         powrho[0] = 1/rho;
@@ -505,13 +606,98 @@ public:
             powrho[i + 1] = powrho[i]/rho;
         }
 
-        #pragma omp simd
         for (int jk=0; jk<=nm2i(p, p); ++jk) {
-            const int j = _i2n[jk];
-            const int k = _i2m[jk];
-            Ll[jk] += Lljk(_A.data(), powrho, expphi, get_Z_of_other(dijk).data(), dijk.k >= 0, j, k, Ml,
-                           std::make_integer_sequence<int, nm2i(p, p) + 1>{});
+            const std::size_t base = static_cast<std::size_t>(jk)*(nm2i(p, p) + 1);
+            Vector<std::complex<T>, N> acc{};
+            #pragma omp simd
+            for (int nm=0; nm<=nm2i(p, p); ++nm) {
+                const T v = coef[base + nm]*powrho[pw[base + nm]]*Zi[zi[base + nm]];
+                acc += v*expphi[qi[base + nm]]*Ml[nm];
+            }
+            Ll[jk] += acc;
         }
+    }
+
+    template<typename Int3_t, typename ClusterData_t>
+    void M2Lc_rtr(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
+    {
+        using CV = Vector<std::complex<T>, N>;
+
+        const T rho = _width/(1 << l)*std::sqrt(static_cast<T>(dijk.i*dijk.i + dijk.j*dijk.j + dijk.k*dijk.k));
+        const std::complex<T>* __restrict expphi = get_expphi_of_other(dijk).data();
+        const T* __restrict R = _rot.data() + static_cast<std::size_t>(rot_class(dijk))*n_rot;
+
+        alignas(64) T powrho[2*p + 1];
+        powrho[0] = 1/rho;
+        for (int i=0; i<2*p; ++i) {
+            powrho[i + 1] = powrho[i]/rho;
+        }
+
+        std::array<CV, nm2i(p, p) + 1> Mt;
+        for (int nm=0; nm<=nm2i(p, p); ++nm) {
+            Mt[nm] = expphi[_i2m[nm] + 2*p]*Ml[nm];
+        }
+
+        std::array<CV, nm2i(p, p) + 1> W;
+        for (int n=0; n<=p; ++n) {
+            const T* __restrict Rn = R + _rot_off[n];
+            const int base = nm2i(n, -n);
+            for (int a=0; a<2*n + 1; ++a) {
+                const T* __restrict row = Rn + a*(2*n + 1);
+                CV acc{};
+                #pragma omp simd
+                for (int b=0; b<2*n + 1; ++b) {
+                    acc += row[b]*Mt[base + b];
+                }
+                W[base + a] = acc;
+            }
+        }
+
+        std::array<CV, nm2i(p, p) + 1> Lz;
+        for (int k=-p; k<=p; ++k) {
+            const int ak = absi(k);
+            const int w = p + 1 - ak;
+            const T* __restrict tz = _tz.data() + _tz_off[k + p];
+            for (int j=ak; j<=p; ++j) {
+                const T* __restrict row = tz + (j - ak)*w;
+                CV acc{};
+                #pragma omp simd
+                for (int n=ak; n<=p; ++n) {
+                    acc += (row[n - ak]*powrho[j + n])*W[nm2i(n, k)];
+                }
+                Lz[nm2i(j, k)] = acc;
+            }
+        }
+
+        for (int j=0; j<=p; ++j) {
+            const T* __restrict Rj = R + _rot_off[j];
+            const int base = nm2i(j, -j);
+            std::array<CV, 2*p + 1> Lt;
+            for (int a=0; a<2*j + 1; ++a) {
+                Lt[a] = CV{};
+            }
+            for (int b=0; b<2*j + 1; ++b) {
+                const T* __restrict row = Rj + b*(2*j + 1);
+                const CV v = Lz[base + b];
+                #pragma omp simd
+                for (int a=0; a<2*j + 1; ++a) {
+                    Lt[a] += row[a]*v;
+                }
+            }
+            for (int a=0; a<2*j + 1; ++a) {
+                Ll[base + a] += expphi[(j - a) + 2*p]*Lt[a];
+            }
+        }
+    }
+
+    template<typename Int3_t, typename ClusterData_t>
+    void M2Lc(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
+    {
+#ifdef FMM_M2L_DIRECT
+        M2Lc_direct(l, dijk, Ml, Ll);
+#else
+        M2Lc_rtr(l, dijk, Ml, Ll);
+#endif
     }
 
     template<typename LevelData_t>
@@ -532,7 +718,7 @@ public:
     void L2Lc(int lc, zindex_t cc, const ClusterData_t& Lp, ClusterData_t& Lc) const noexcept
     {
         const T rho = std::sqrt(static_cast<T>(0.75))*_width/(1 << lc);
-        const T phi = get_phi_of_parent(cc);
+        const std::complex<T>* __restrict ephi = _expphi_parent[cc%4].data();
 
         for (int j=0; j<=p; ++j) {
             for (int k=-j; k<=j; ++k) {
@@ -541,7 +727,7 @@ public:
                     for (int m=std::max(-n, k - (n - j)); m<=std::min(n, k + (n - j)); ++m) {
                         const T v = pow1(fkm(m, m - k) + n + j)*get_A(n - j, m - k)*get_A(j, k)/get_A(n, m)*
                                     rhomjpn*get_Z_of_parent(cc, n - j, m - k);
-                        Lc[nm2i(j, k)] += std::polar(v, (m - k)*phi)*Lp[nm2i(n, m)];
+                        Lc[nm2i(j, k)] += v*ephi[(m - k) + p]*Lp[nm2i(n, m)];
                     }
                     rhomjpn *= rho;
                 }
@@ -572,9 +758,16 @@ public:
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
+                std::array<std::complex<T>, p + 1> F;
+                const std::complex<T> estep{std::cos(_phi[i]), std::sin(_phi[i])};
+                F[0] = 1;
+                for (int m=1; m<=p; ++m) {
+                    F[m] = F[m - 1]*estep;
+                }
                 #pragma omp simd
                 for (int jk=0; jk<=nm2i(p, p); ++jk) {
-                    U[i] += _Zrho[i][jk]*c2r(L[i_node][jk], _i2m[jk]*_phi[i]);
+                    const int m = _i2m[jk];
+                    U[i] += _Zrho[i][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
                 }
             }
         }
