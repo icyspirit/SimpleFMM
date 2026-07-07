@@ -155,6 +155,8 @@ private:
     std::array<T, nposm2i(p, p) + 1> _Z_near_positive;
     std::array<std::array<T, nposm2i(2*p, 2*p) + 1>, 64> _Z_ilist_positive;
     std::array<std::array<std::complex<T>, 4*p + 1>, 49> _expphi_ilist;
+    std::array<std::array<std::complex<T>, 2*p + 1>, 4> _expphi_child;
+    std::array<std::array<std::complex<T>, 2*p + 1>, 4> _expphi_parent;
     avector<T> _A;
 
     std::array<int, nm2i(p, p) + 1> _i2n;
@@ -177,25 +179,25 @@ private:
     mutable std::vector<LevelData<std::array<Vector<std::complex<T>, N>, nm2i(p, p) + 1>>> _L;
 
     template<size_t... I>
-    inline static Vector<std::complex<T>, N> r2c_impl(const Vector<T, N>& r, T theta, std::index_sequence<I...>) noexcept
+    inline static Vector<std::complex<T>, N> r2c_impl(const Vector<T, N>& r, std::complex<T> e, std::index_sequence<I...>) noexcept
     {
-        return {std::polar(r[I], theta)...};
+        return {r[I]*e...};
     }
 
-    inline static Vector<std::complex<T>, N> r2c(const Vector<T, N>& r, T theta) noexcept
+    inline static Vector<std::complex<T>, N> r2c(const Vector<T, N>& r, std::complex<T> e) noexcept
     {
-        return r2c_impl(r, theta, std::make_index_sequence<N>{});
+        return r2c_impl(r, e, std::make_index_sequence<N>{});
     }
 
     template<size_t... I>
-    inline static Vector<T, N> c2r_impl(const Vector<std::complex<T>, N>& c, T theta, std::index_sequence<I...>) noexcept
+    inline static Vector<T, N> c2r_impl(const Vector<std::complex<T>, N>& c, std::complex<T> e, std::index_sequence<I...>) noexcept
     {
-        return {(c[I].real()*std::cos(theta) - c[I].imag()*std::sin(theta))...};
+        return {(c[I].real()*e.real() - c[I].imag()*e.imag())...};
     }
 
-    inline static Vector<T, N> c2r(const Vector<std::complex<T>, N>& c, T theta) noexcept
+    inline static Vector<T, N> c2r(const Vector<std::complex<T>, N>& c, std::complex<T> e) noexcept
     {
-        return c2r_impl(c, theta, std::make_index_sequence<N>{});
+        return c2r_impl(c, e, std::make_index_sequence<N>{});
     }
 
 public:
@@ -286,6 +288,13 @@ public:
                 for (int q=-2*p; q<=2*p; ++q) {
                     _expphi_ilist[7*(j + 3) + (i + 3)][q + 2*p] = std::polar(static_cast<T>(1), q*phi);
                 }
+            }
+        }
+
+        for (int c=0; c<4; ++c) {
+            for (int q=-p; q<=p; ++q) {
+                _expphi_child[c][q + p] = std::polar(static_cast<T>(1), q*get_phi_of_child(c));
+                _expphi_parent[c][q + p] = std::polar(static_cast<T>(1), q*get_phi_of_parent(c));
             }
         }
 
@@ -524,10 +533,19 @@ public:
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
+                std::array<std::complex<T>, p + 1> E;
+                if constexpr (!gradient) {
+                    const std::complex<T> estep{std::cos(_phi[i]), -std::sin(_phi[i])};
+                    E[0] = 1;
+                    for (int m=1; m<=p; ++m) {
+                        E[m] = E[m - 1]*estep;
+                    }
+                }
                 #pragma omp simd
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
                     if constexpr (!gradient) {
-                        M[i_node][nm] += r2c(Q[i]*_Zrho[i][nm], -_i2m[nm]*_phi[i]);
+                        const int m = _i2m[nm];
+                        M[i_node][nm] += r2c(Q[i]*_Zrho[i][nm], m >= 0 ? E[m] : std::conj(E[-m]));
                     } else {
                         static_assert(N == 3);
                         M[i_node][nm] += Vector<std::complex<T>, N>{Q[i][0], Q[i][1], Q[i][2]}.cross(_Zgrho[i][nm]);
@@ -541,7 +559,7 @@ public:
     void M2Mc(int lc, zindex_t cc, const ClusterData_t& Mc, ClusterData_t& Mp) const noexcept
     {
         const T rho = std::sqrt(static_cast<T>(0.75))*_width/(1 << lc);
-        const T phi = get_phi_of_child(cc);
+        const std::complex<T>* __restrict ephi = _expphi_child[cc%4].data();
 
         for (int j=0; j<=p; ++j) {
             for (int k=-j; k<=j; ++k) {
@@ -549,7 +567,7 @@ public:
                 for (int n=0; n<=j; ++n) {
                     for (int m=std::max(-n, k - (j - n)); m<=std::min(n, k + (j - n)); ++m) {
                         const T v = pow1(fkm(k, m))*get_A(n, m)*get_A(j - n, k - m)/get_A(j, k)*rhopn*get_Z_of_child(cc, n, -m);
-                        Mp[nm2i(j, k)] += std::polar(v, -m*phi)*Mc[nm2i(j - n, k - m)];
+                        Mp[nm2i(j, k)] += v*ephi[p - m]*Mc[nm2i(j - n, k - m)];
                     }
                     rhopn *= rho;
                 }
@@ -700,7 +718,7 @@ public:
     void L2Lc(int lc, zindex_t cc, const ClusterData_t& Lp, ClusterData_t& Lc) const noexcept
     {
         const T rho = std::sqrt(static_cast<T>(0.75))*_width/(1 << lc);
-        const T phi = get_phi_of_parent(cc);
+        const std::complex<T>* __restrict ephi = _expphi_parent[cc%4].data();
 
         for (int j=0; j<=p; ++j) {
             for (int k=-j; k<=j; ++k) {
@@ -709,7 +727,7 @@ public:
                     for (int m=std::max(-n, k - (n - j)); m<=std::min(n, k + (n - j)); ++m) {
                         const T v = pow1(fkm(m, m - k) + n + j)*get_A(n - j, m - k)*get_A(j, k)/get_A(n, m)*
                                     rhomjpn*get_Z_of_parent(cc, n - j, m - k);
-                        Lc[nm2i(j, k)] += std::polar(v, (m - k)*phi)*Lp[nm2i(n, m)];
+                        Lc[nm2i(j, k)] += v*ephi[(m - k) + p]*Lp[nm2i(n, m)];
                     }
                     rhomjpn *= rho;
                 }
@@ -740,9 +758,16 @@ public:
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
+                std::array<std::complex<T>, p + 1> F;
+                const std::complex<T> estep{std::cos(_phi[i]), std::sin(_phi[i])};
+                F[0] = 1;
+                for (int m=1; m<=p; ++m) {
+                    F[m] = F[m - 1]*estep;
+                }
                 #pragma omp simd
                 for (int jk=0; jk<=nm2i(p, p); ++jk) {
-                    U[i] += _Zrho[i][jk]*c2r(L[i_node][jk], _i2m[jk]*_phi[i]);
+                    const int m = _i2m[jk];
+                    U[i] += _Zrho[i][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
                 }
             }
         }
