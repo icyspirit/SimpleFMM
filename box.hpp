@@ -57,8 +57,9 @@ private:
     template<size_t... I>
     inline static zindex_t c_impl(int level, const Coord_t& v, std::index_sequence<I...>) noexcept
     {
-        assert(((v[I] >= 0 && v[I] < 1) && ...));
-        return (i2z<sizeof...(I), I, zindex_t>(static_cast<index_t>(v[I]*(1 << level))) | ...);
+        assert(((v[I] >= 0 && v[I] <= 1) && ...));
+        const index_t imax = (static_cast<index_t>(1) << level) - 1;
+        return (i2z<sizeof...(I), I, zindex_t>(std::clamp(static_cast<index_t>(v[I]*(1 << level)), static_cast<index_t>(0), imax)) | ...);
     }
 
     template<size_t... I>
