@@ -542,7 +542,6 @@ public:
                         E[m] = E[m - 1]*estep;
                     }
                 }
-                #pragma omp simd
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
                     if constexpr (!gradient) {
                         const int m = _i2m[nm];
@@ -610,7 +609,6 @@ public:
         for (int jk=0; jk<=nm2i(p, p); ++jk) {
             const std::size_t base = static_cast<std::size_t>(jk)*(nm2i(p, p) + 1);
             Vector<std::complex<T>, N> acc{};
-            #pragma omp simd
             for (int nm=0; nm<=nm2i(p, p); ++nm) {
                 const T v = coef[base + nm]*powrho[pw[base + nm]]*Zi[zi[base + nm]];
                 acc += v*expphi[qi[base + nm]]*Ml[nm];
@@ -646,7 +644,6 @@ public:
             for (int a=0; a<2*n + 1; ++a) {
                 const T* __restrict row = Rn + a*(2*n + 1);
                 CV acc{};
-                #pragma omp simd
                 for (int b=0; b<2*n + 1; ++b) {
                     acc += row[b]*Mt[base + b];
                 }
@@ -662,7 +659,6 @@ public:
             for (int j=ak; j<=p; ++j) {
                 const T* __restrict row = tz + (j - ak)*w;
                 CV acc{};
-                #pragma omp simd
                 for (int n=ak; n<=p; ++n) {
                     acc += (row[n - ak]*powrho[j + n])*W[nm2i(n, k)];
                 }
