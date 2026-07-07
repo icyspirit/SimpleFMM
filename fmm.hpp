@@ -111,6 +111,20 @@ inline T Z(int n, int m, T theta) noexcept
 }
 
 
+inline long double wigner_d(int n, int a, int b, long double beta,
+                            const long double* lf, const long double* cbp, const long double* sbp) noexcept
+{
+    const long double pref = 0.5L*(lf[n + a] + lf[n - a] + lf[n + b] + lf[n - b]);
+    long double sum = 0;
+    for (int t=std::max(0, b - a); t<=std::min(n + b, n - a); ++t) {
+        const long double term = std::exp(pref - lf[n + b - t] - lf[t] - lf[a - b + t] - lf[n - a - t])*
+                                 cbp[2*n + b - a - 2*t]*sbp[a - b + 2*t];
+        sum += (a - b + t)%2 == 0 ? term : -term;
+    }
+    return sum;
+}
+
+
 inline int fkm(int k, int m) noexcept
 {
     return (absi(k) - absi(m) - absi(k - m)) >> 1;
@@ -150,6 +164,13 @@ private:
     avector<int> _m2l_zi;
     avector<int> _m2l_q;
     avector<int> _m2l_pw;
+    static constexpr int n_rot_class = 70;
+    static constexpr int n_rot = (p + 1)*(2*p + 1)*(2*p + 3)/3;
+    static constexpr std::array<int, 19> _t2i{0, 1, 2, -1, 3, 4, -1, -1, 5, 6, 7, -1, -1, 8, -1, -1, -1, -1, 9};
+    std::array<int, p + 1> _rot_off;
+    avector<T> _rot;
+    std::array<int, 2*p + 1> _tz_off;
+    avector<T> _tz;
     CSRP<> _slist;
 
     mutable std::vector<LevelData<std::array<Vector<std::complex<T>, N>, nm2i(p, p) + 1>>> _M;
@@ -306,6 +327,64 @@ public:
             }
         }
 
+        _rot_off[0] = 0;
+        for (int n=1; n<=p; ++n) {
+            _rot_off[n] = _rot_off[n - 1] + (2*n - 1)*(2*n - 1);
+        }
+
+        const auto sgn = [](int m) noexcept { return m < 0 ? pow1(m) : 1; };
+
+        long double lf[2*p + 2];
+        for (int n=0; n<2*p + 2; ++n) {
+            lf[n] = std::lgamma(static_cast<long double>(n) + 1);
+        }
+
+        _rot.resize(static_cast<std::size_t>(n_rot_class)*n_rot);
+        constexpr std::array<int, 10> tvals{0, 1, 2, 4, 5, 8, 9, 10, 13, 18};
+        for (int ti=0; ti<10; ++ti) {
+            for (int dk=-3; dk<=3; ++dk) {
+                if (tvals[ti] == 0 && dk == 0) {
+                    continue;
+                }
+                const long double theta = std::acos(dk/std::sqrt(static_cast<long double>(tvals[ti] + dk*dk)));
+                long double cbp[2*p + 1], sbp[2*p + 1];
+                cbp[0] = 1;
+                sbp[0] = 1;
+                for (int e=0; e<2*p; ++e) {
+                    cbp[e + 1] = cbp[e]*std::cos(-theta/2);
+                    sbp[e + 1] = sbp[e]*std::sin(-theta/2);
+                }
+                T* R = _rot.data() + static_cast<std::size_t>(7*ti + dk + 3)*n_rot;
+                for (int n=0; n<=p; ++n) {
+                    for (int a=-n; a<=n; ++a) {
+                        for (int b=-n; b<=n; ++b) {
+                            R[_rot_off[n] + (a + n)*(2*n + 1) + (b + n)] =
+                                sgn(a)*sgn(b)*wigner_d(n, a, b, -theta, lf, cbp, sbp);
+                        }
+                    }
+                }
+            }
+        }
+
+        {
+            int off = 0;
+            for (int k=-p; k<=p; ++k) {
+                _tz_off[k + p] = off;
+                off += (p + 1 - absi(k))*(p + 1 - absi(k));
+            }
+            _tz.resize(off);
+            for (int k=-p; k<=p; ++k) {
+                const int ak = absi(k);
+                const int w = p + 1 - ak;
+                for (int j=ak; j<=p; ++j) {
+                    for (int n=ak; n<=p; ++n) {
+                        _tz[_tz_off[k + p] + (j - ak)*w + (n - ak)] =
+                            pow1(n + ak)*_A[nposm2i(n, ak)]*_A[nposm2i(j, ak)]/_A[nposm2i(j + n, 0)];
+                    }
+                }
+            }
+        }
+
         _slist.reserve_nrow(_n_particle);
         _slist.reserve(_n_particle*self_generator(0).size());
         for (int i=0; i<_n_particle; ++i) {
@@ -400,6 +479,12 @@ public:
         return _expphi_ilist[7*(dijk.j + 3) + (dijk.i + 3)];
     }
 
+    template<typename Int3_t>
+    inline int rot_class(const Int3_t& dijk) const noexcept
+    {
+        return 7*_t2i[dijk.i*dijk.i + dijk.j*dijk.j] + (dijk.k + 3);
+    }
+
     inline T get_A(int n, int m) const noexcept
     {
         return _A[nposm2i(n, m)];
@@ -465,7 +550,7 @@ public:
     }
 
     template<typename Int3_t, typename ClusterData_t>
-    void M2Lc(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
+    void M2Lc_direct(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
     {
         const T rho = _width/(1 << l)*std::sqrt(static_cast<T>(dijk.i*dijk.i + dijk.j*dijk.j + dijk.k*dijk.k));
         const std::complex<T>* __restrict expphi = get_expphi_of_other(dijk).data();
@@ -491,6 +576,88 @@ public:
             }
             Ll[jk] += acc;
         }
+    }
+
+    template<typename Int3_t, typename ClusterData_t>
+    void M2Lc_rtr(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
+    {
+        using CV = Vector<std::complex<T>, N>;
+
+        const T rho = _width/(1 << l)*std::sqrt(static_cast<T>(dijk.i*dijk.i + dijk.j*dijk.j + dijk.k*dijk.k));
+        const std::complex<T>* __restrict expphi = get_expphi_of_other(dijk).data();
+        const T* __restrict R = _rot.data() + static_cast<std::size_t>(rot_class(dijk))*n_rot;
+
+        alignas(64) T powrho[2*p + 1];
+        powrho[0] = 1/rho;
+        for (int i=0; i<2*p; ++i) {
+            powrho[i + 1] = powrho[i]/rho;
+        }
+
+        std::array<CV, nm2i(p, p) + 1> Mt;
+        for (int nm=0; nm<=nm2i(p, p); ++nm) {
+            Mt[nm] = expphi[_i2m[nm] + 2*p]*Ml[nm];
+        }
+
+        std::array<CV, nm2i(p, p) + 1> W;
+        for (int n=0; n<=p; ++n) {
+            const T* __restrict Rn = R + _rot_off[n];
+            const int base = nm2i(n, -n);
+            for (int a=0; a<2*n + 1; ++a) {
+                const T* __restrict row = Rn + a*(2*n + 1);
+                CV acc{};
+                #pragma omp simd
+                for (int b=0; b<2*n + 1; ++b) {
+                    acc += row[b]*Mt[base + b];
+                }
+                W[base + a] = acc;
+            }
+        }
+
+        std::array<CV, nm2i(p, p) + 1> Lz;
+        for (int k=-p; k<=p; ++k) {
+            const int ak = absi(k);
+            const int w = p + 1 - ak;
+            const T* __restrict tz = _tz.data() + _tz_off[k + p];
+            for (int j=ak; j<=p; ++j) {
+                const T* __restrict row = tz + (j - ak)*w;
+                CV acc{};
+                #pragma omp simd
+                for (int n=ak; n<=p; ++n) {
+                    acc += (row[n - ak]*powrho[j + n])*W[nm2i(n, k)];
+                }
+                Lz[nm2i(j, k)] = acc;
+            }
+        }
+
+        for (int j=0; j<=p; ++j) {
+            const T* __restrict Rj = R + _rot_off[j];
+            const int base = nm2i(j, -j);
+            std::array<CV, 2*p + 1> Lt;
+            for (int a=0; a<2*j + 1; ++a) {
+                Lt[a] = CV{};
+            }
+            for (int b=0; b<2*j + 1; ++b) {
+                const T* __restrict row = Rj + b*(2*j + 1);
+                const CV v = Lz[base + b];
+                #pragma omp simd
+                for (int a=0; a<2*j + 1; ++a) {
+                    Lt[a] += row[a]*v;
+                }
+            }
+            for (int a=0; a<2*j + 1; ++a) {
+                Ll[base + a] += expphi[(j - a) + 2*p]*Lt[a];
+            }
+        }
+    }
+
+    template<typename Int3_t, typename ClusterData_t>
+    void M2Lc(int l, const Int3_t& dijk, const ClusterData_t& Ml, ClusterData_t& Ll) const noexcept
+    {
+#ifdef FMM_M2L_DIRECT
+        M2Lc_direct(l, dijk, Ml, Ll);
+#else
+        M2Lc_rtr(l, dijk, Ml, Ll);
+#endif
     }
 
     template<typename LevelData_t>
