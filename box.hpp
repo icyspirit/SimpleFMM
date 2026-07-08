@@ -70,6 +70,17 @@ private:
     }
 
 public:
+    Box(const Coord_t& corner, T width, int vertical_axis=dim - 1, T phideg=0):
+        _X{(vertical_axis + 1)%dim},
+        _Y{(vertical_axis + 2)%dim},
+        _Z{vertical_axis},
+        _phi{phideg*static_cast<T>(M_PI/180)},
+        _width{width},
+        _corner{corner}
+    {
+        assert(vertical_axis >= 0 && vertical_axis < dim);
+    }
+
     Box(const std::vector<Coord_t>& positions, int vertical_axis=dim - 1, T phideg=0):
         _X{(vertical_axis + 1)%dim},
         _Y{(vertical_axis + 2)%dim},
@@ -98,6 +109,11 @@ public:
     inline T width() const noexcept
     {
         return _width;
+    }
+
+    inline const Coord_t& corner() const noexcept
+    {
+        return _corner;
     }
 
     inline zindex_t get_c(int level, const Coord_t& v) const noexcept
