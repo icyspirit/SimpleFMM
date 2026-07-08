@@ -112,12 +112,12 @@ inline T Z(int n, int m, T theta) noexcept
 
 
 inline long double wigner_d(int n, int a, int b,
-                            const long double* lf, const long double* cbp, const long double* sbp) noexcept
+                            const long double* f, const long double* cbp, const long double* sbp) noexcept
 {
-    const long double pref = 0.5L*(lf[n + a] + lf[n - a] + lf[n + b] + lf[n - b]);
+    const long double pref = std::sqrt(f[n + a]*f[n - a]*f[n + b]*f[n - b]);
     long double sum = 0;
     for (int t=std::max(0, b - a); t<=std::min(n + b, n - a); ++t) {
-        const long double term = std::exp(pref - lf[n + b - t] - lf[t] - lf[a - b + t] - lf[n - a - t])*
+        const long double term = pref/(f[n + b - t]*f[t]*f[a - b + t]*f[n - a - t])*
                                  cbp[2*n + b - a - 2*t]*sbp[a - b + 2*t];
         sum += (a - b + t)%2 == 0 ? term : -term;
     }
@@ -343,9 +343,10 @@ public:
 
         const auto sgn = [](int m) noexcept { return m < 0 ? pow1(m) : 1; };
 
-        long double lf[2*p + 2];
-        for (int n=0; n<2*p + 2; ++n) {
-            lf[n] = std::lgamma(static_cast<long double>(n) + 1);
+        long double f[2*p + 2];
+        f[0] = 1;
+        for (int n=1; n<2*p + 2; ++n) {
+            f[n] = f[n - 1]*n;
         }
 
         _rot.resize(static_cast<std::size_t>(n_rot_class)*n_rot);
@@ -368,7 +369,7 @@ public:
                     for (int a=-n; a<=n; ++a) {
                         for (int b=-n; b<=n; ++b) {
                             R[_rot_off[n] + (a + n)*(2*n + 1) + (b + n)] =
-                                sgn(a)*sgn(b)*wigner_d(n, a, b, lf, cbp, sbp);
+                                sgn(a)*sgn(b)*wigner_d(n, a, b, f, cbp, sbp);
                         }
                     }
                 }
@@ -541,7 +542,6 @@ public:
                         E[m] = E[m - 1]*estep;
                     }
                 }
-                #pragma omp simd
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
                     if constexpr (!gradient) {
                         const int m = _i2m[nm];
@@ -609,7 +609,6 @@ public:
         for (int jk=0; jk<=nm2i(p, p); ++jk) {
             const std::size_t base = static_cast<std::size_t>(jk)*(nm2i(p, p) + 1);
             Vector<std::complex<T>, N> acc{};
-            #pragma omp simd
             for (int nm=0; nm<=nm2i(p, p); ++nm) {
                 const T v = coef[base + nm]*powrho[pw[base + nm]]*Zi[zi[base + nm]];
                 acc += v*expphi[qi[base + nm]]*Ml[nm];
@@ -645,7 +644,6 @@ public:
             for (int a=0; a<2*n + 1; ++a) {
                 const T* __restrict row = Rn + a*(2*n + 1);
                 CV acc{};
-                #pragma omp simd
                 for (int b=0; b<2*n + 1; ++b) {
                     acc += row[b]*Mt[base + b];
                 }
@@ -661,7 +659,6 @@ public:
             for (int j=ak; j<=p; ++j) {
                 const T* __restrict row = tz + (j - ak)*w;
                 CV acc{};
-                #pragma omp simd
                 for (int n=ak; n<=p; ++n) {
                     acc += (row[n - ak]*powrho[j + n])*W[nm2i(n, k)];
                 }
