@@ -156,6 +156,19 @@ public:
                 v[_Z]};
     }
 
+    // rotate() is a cyclic axis permutation followed by a turn about the box
+    // vertical, so it is a proper rotation and this is its inverse.
+    template<typename U>
+    inline Container<U, dim> unrotate(const Container<U, dim>& v) const noexcept
+    {
+        Container<U, dim> out{};
+        out[_X] = std::cos(_phi)*v[0] + std::sin(_phi)*v[1];
+        out[_Y] = -std::sin(_phi)*v[0] + std::cos(_phi)*v[1];
+        out[_Z] = v[2];
+
+        return out;
+    }
+
     inline bool comp(const Coord_t& lhs, const Coord_t& rhs) const noexcept
     {
         for (int level=1; level<=MAX_LEVEL; ++level) {

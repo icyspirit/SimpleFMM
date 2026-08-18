@@ -246,7 +246,7 @@ public:
                                         std::polar(rhonm1/std::sin(theta)*(std::sqrt(static_cast<T>((n + 1)*(n + 1) - m*m))*Z(n + 1, m, theta) - (n + 1)*std::cos(theta)*Z(n, m, theta)), -m*_phi[i]),
                                         std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[i] + M_PI/2))
                                     };
-                                    _Zgrho[i][nm2i(n, m)] = rot.dot(vec);
+                                    _Zgrho[i][nm2i(n, m)] = _partitioner.box().template unrotate<std::complex<T>>(rot.dot(vec));
                                 }
                                 rhonm1 *= rho;
                             }
