@@ -5,8 +5,8 @@
 #include "timer.hpp"
 #include <vector>
 #include <iostream>
+#include <cstdlib>
 
-constexpr size_t N = 200000;
 constexpr int dim = 3;
 using Vector_t = Vector<double, dim>;
 
@@ -18,6 +18,13 @@ int main(int argc, char** argv)
     int size, rank;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    // The direct comparison is O(N^2), so N is worth lowering for a quick check.
+    // The box orientation belongs on the command line because the field is the
+    // one quantity that is not invariant under it.
+    const size_t N = argc > 1 ? std::strtoul(argv[1], nullptr, 10) : 200000;
+    const int vertical_axis = argc > 2 ? std::atoi(argv[2]) : dim - 1;
+    const double phideg = argc > 3 ? std::atof(argv[3]) : 0;
 
     // Initialize random positions in a cube [0, 1]^3
     std::vector<Vector_t> positions;
@@ -34,8 +41,7 @@ int main(int argc, char** argv)
     }
 
     // Define simulation domain by a cube
-    int vertical_axis = 2;
-    Box<double, dim, Vector> box(positions, vertical_axis);
+    Box<double, dim, Vector> box(positions, vertical_axis, phideg);
     if (rank == 0) {
         std::cout << box << std::endl;
     }
