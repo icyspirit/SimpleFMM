@@ -450,6 +450,29 @@ public:
 
     // Global indices of the particles this rank reduces and evaluates, in the
     // order N2M and L2N walk them.  Every particle belongs to exactly one rank.
+    // Who owns what is a pure function of the tree and the rank count, so every
+    // rank can work out the whole owner-major listing without asking anyone:
+    // rank r holds order[displ[r] .. displ[r + 1]).
+    void owner_order(std::vector<int>& order, std::vector<int>& displ) const
+    {
+        order.clear();
+        order.reserve(_n_particle);
+        displ.assign(_size + 1, 0);
+        for (int r=0; r<_size; ++r) {
+            for (int l=0; l<=_partitioner.level(); ++l) {
+                const auto& olevel = _partitioner.octreeLevel(l);
+                const auto& indices = olevel.indices();
+                const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, r);
+                for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
+                    for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                        order.emplace_back(std::get<0>(indices.value(i_leaf, inz)));
+                    }
+                }
+            }
+            displ[r + 1] = static_cast<int>(order.size());
+        }
+    }
+
     inline int n_local() const noexcept
     {
         return static_cast<int>(_local_index.size());
