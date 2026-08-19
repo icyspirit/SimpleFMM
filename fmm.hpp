@@ -148,9 +148,13 @@ private:
     T _width;
 
     int _size, _rank;
-    svector<T> _phi;
-    svector<std::array<T, nm2i(p, p) + 1>> _Zrho;
-    svector<std::array<Vector<std::complex<T>, dim>, nm2i(p, p) + 1>> _Zgrho;
+    // Solid harmonics are held only for the particles this rank reduces and
+    // evaluates, in the order N2M and L2N walk them, so no index map is needed.
+    std::vector<int> _local_off;
+    std::vector<int> _local_index;
+    avector<T> _phi;
+    avector<std::array<T, nm2i(p, p) + 1>> _Zrho;
+    avector<std::array<Vector<std::complex<T>, dim>, nm2i(p, p) + 1>> _Zgrho;
 
     std::array<T, nposm2i(p, p) + 1> _Z_near_positive;
     std::array<std::array<T, nposm2i(2*p, 2*p) + 1>, 64> _Z_ilist_positive;
@@ -206,59 +210,72 @@ public:
         _comm{comm},
         _positions{partitioner.positions()},
         _n_particle{static_cast<int>(_positions.size())},
-        _width{partitioner.box().width()},
-        _phi(_comm, _n_particle),
-        _Zrho(_comm, _n_particle),
-        _Zgrho(_comm, _n_particle*support_gradient)
+        _width{partitioner.box().width()}
     {
         MPI_Comm_size(_comm, &_size);
         MPI_Comm_rank(_comm, &_rank);
 
-        _partitioner.root()->traverse(
-            [&](const auto* node) {
-                for (const int i: node->indices()) {
-                    if (i >= begin(_n_particle, _size, _rank) && i < end(_n_particle, _size, _rank)) {
-                        const Coord_t delta = _partitioner.box().rotate(_positions[i]) -
-                                              _partitioner.box().get_center(node->l(), node->c());
-                        const T rho = delta.norm();
-                        const T theta = std::acos(delta[2]/rho);
-                        _phi[i] = std::atan2(delta[1], delta[0]);
-                        T rhon = 1;
-                        for (int n=0; n<=p; ++n) {
-                            for (int m=-n; m<=n; ++m) {
-                                _Zrho[i][nm2i(n, m)] = rhon*Z(n, m, theta);
-                            }
-                            rhon *= rho;
+        _local_off.resize(_partitioner.level() + 2);
+        _local_off[0] = 0;
+        for (int l=0; l<=_partitioner.level(); ++l) {
+            const auto& olevel = _partitioner.octreeLevel(l);
+            const auto& indices = olevel.indices();
+            const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+            _local_off[l + 1] = _local_off[l] + static_cast<int>(indices.nnz(leaf0, leaf1));
+        }
+        const int n_local = _local_off[_partitioner.level() + 1];
+        _local_index.reserve(n_local);
+        _phi.resize(n_local);
+        _Zrho.resize(n_local);
+        _Zgrho.resize(static_cast<std::size_t>(n_local)*support_gradient);
+
+        for (int l=0; l<=_partitioner.level(); ++l) {
+            const auto& olevel = _partitioner.octreeLevel(l);
+            const auto& indices = olevel.indices();
+            const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+            int slot = _local_off[l];
+            for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
+                const Coord_t center = _partitioner.box().get_center(l, olevel.c_node()[olevel.from_leaf(i_leaf)]);
+                for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                    const int i = std::get<0>(indices.value(i_leaf, inz));
+                    _local_index.emplace_back(i);
+
+                    const Coord_t delta = _partitioner.box().rotate(_positions[i]) - center;
+                    const T rho = delta.norm();
+                    const T theta = std::acos(delta[2]/rho);
+                    _phi[slot] = std::atan2(delta[1], delta[0]);
+                    T rhon = 1;
+                    for (int n=0; n<=p; ++n) {
+                        for (int m=-n; m<=n; ++m) {
+                            _Zrho[slot][nm2i(n, m)] = rhon*Z(n, m, theta);
                         }
+                        rhon *= rho;
+                    }
 
-                        if constexpr (support_gradient) {
-                            const Matrix<std::complex<T>, dim, dim> rot{
-                                std::sin(theta)*std::cos(_phi[i]), std::sin(theta)*std::sin(_phi[i]), std::cos(theta),
-                                std::cos(theta)*std::cos(_phi[i]), std::cos(theta)*std::sin(_phi[i]), -std::sin(theta),
-                                -std::sin(_phi[i]), std::cos(_phi[i]), 0
-                            };
+                    if constexpr (support_gradient) {
+                        const Matrix<std::complex<T>, dim, dim> rot{
+                            std::sin(theta)*std::cos(_phi[slot]), std::sin(theta)*std::sin(_phi[slot]), std::cos(theta),
+                            std::cos(theta)*std::cos(_phi[slot]), std::cos(theta)*std::sin(_phi[slot]), -std::sin(theta),
+                            -std::sin(_phi[slot]), std::cos(_phi[slot]), 0
+                        };
 
-                            T rhonm1 = 1;
-                            for (int n=1; n<=p; ++n) {
-                                for (int m=-n; m<=n; ++m) {
-                                    const Vector<std::complex<T>, dim> vec{
-                                        std::polar(n*rhonm1*Z(n, m, theta), -m*_phi[i]),
-                                        std::polar(rhonm1/std::sin(theta)*(std::sqrt(static_cast<T>((n + 1)*(n + 1) - m*m))*Z(n + 1, m, theta) - (n + 1)*std::cos(theta)*Z(n, m, theta)), -m*_phi[i]),
-                                        std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[i] + M_PI/2))
-                                    };
-                                    _Zgrho[i][nm2i(n, m)] = _partitioner.box().template unrotate<std::complex<T>>(rot.dot(vec));
-                                }
-                                rhonm1 *= rho;
+                        T rhonm1 = 1;
+                        for (int n=1; n<=p; ++n) {
+                            for (int m=-n; m<=n; ++m) {
+                                const Vector<std::complex<T>, dim> vec{
+                                    std::polar(n*rhonm1*Z(n, m, theta), -m*_phi[slot]),
+                                    std::polar(rhonm1/std::sin(theta)*(std::sqrt(static_cast<T>((n + 1)*(n + 1) - m*m))*Z(n + 1, m, theta) - (n + 1)*std::cos(theta)*Z(n, m, theta)), -m*_phi[slot]),
+                                    std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[slot] + M_PI/2))
+                                };
+                                _Zgrho[slot][nm2i(n, m)] = _partitioner.box().template unrotate<std::complex<T>>(rot.dot(vec));
                             }
+                            rhonm1 *= rho;
                         }
                     }
+
+                    ++slot;
                 }
             }
-        );
-        _phi.sync(); _phi.template allreduce<T>();
-        _Zrho.sync(); _Zrho.template allreduce<T>();
-        if constexpr (support_gradient) {
-            _Zgrho.sync(); _Zgrho.template allreduce<T>();
         }
 
         for (int n=0; n<=p; ++n) {
@@ -431,6 +448,13 @@ public:
         return _partitioner;
     }
 
+    // Global indices of the particles this rank reduces and evaluates, in the
+    // order N2M and L2N walk them.  Every particle belongs to exactly one rank.
+    inline const std::vector<int>& local_index() const noexcept
+    {
+        return _local_index;
+    }
+
     inline MPI_Comm comm() const noexcept
     {
         return _comm;
@@ -530,13 +554,14 @@ public:
         const auto& indices = olevel.indices();
 
         const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+        int slot = _local_off[l];
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
-            for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+            for (int inz=0; inz<indices.nnz(i_leaf); ++inz, ++slot) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
                 std::array<std::complex<T>, p + 1> E;
                 if constexpr (!gradient) {
-                    const std::complex<T> estep{std::cos(_phi[i]), -std::sin(_phi[i])};
+                    const std::complex<T> estep{std::cos(_phi[slot]), -std::sin(_phi[slot])};
                     E[0] = 1;
                     for (int m=1; m<=p; ++m) {
                         E[m] = E[m - 1]*estep;
@@ -545,10 +570,10 @@ public:
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
                     if constexpr (!gradient) {
                         const int m = _i2m[nm];
-                        M[i_node][nm] += r2c(Q[i]*_Zrho[i][nm], m >= 0 ? E[m] : std::conj(E[-m]));
+                        M[i_node][nm] += r2c(Q[i]*_Zrho[slot][nm], m >= 0 ? E[m] : std::conj(E[-m]));
                     } else {
                         static_assert(N == 3);
-                        M[i_node][nm] += Vector<std::complex<T>, N>{Q[i][0], Q[i][1], Q[i][2]}.cross(_Zgrho[i][nm]);
+                        M[i_node][nm] += Vector<std::complex<T>, N>{Q[i][0], Q[i][1], Q[i][2]}.cross(_Zgrho[slot][nm]);
                     }
                 }
             }
@@ -751,12 +776,13 @@ public:
         const auto& indices = olevel.indices();
 
         const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+        int slot = _local_off[l];
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
-            for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+            for (int inz=0; inz<indices.nnz(i_leaf); ++inz, ++slot) {
                 const int i = std::get<0>(indices.value(i_leaf, inz));
                 std::array<std::complex<T>, p + 1> F;
-                const std::complex<T> estep{std::cos(_phi[i]), std::sin(_phi[i])};
+                const std::complex<T> estep{std::cos(_phi[slot]), std::sin(_phi[slot])};
                 F[0] = 1;
                 for (int m=1; m<=p; ++m) {
                     F[m] = F[m - 1]*estep;
@@ -764,7 +790,7 @@ public:
                 #pragma omp simd
                 for (int jk=0; jk<=nm2i(p, p); ++jk) {
                     const int m = _i2m[jk];
-                    U[i] += _Zrho[i][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
+                    U[i] += _Zrho[slot][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
                 }
             }
         }
