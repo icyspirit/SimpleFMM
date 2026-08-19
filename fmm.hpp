@@ -6,6 +6,7 @@
 #include "aligned.hpp"
 #include "csr.hpp"
 #include "distributed.hpp"
+#include "expquad.hpp"
 #include "matrix.hpp"
 #include "partition.hpp"
 #include "tree.hpp"
@@ -206,6 +207,25 @@ private:
     std::array<int, 2*p + 1> _tz_off;
     avector<T> _tz;
     CSRP<> _slist;
+
+    static constexpr int exp_digits =
+#ifdef FMM_EXP_DIGITS
+        FMM_EXP_DIGITS;
+#else
+        exp_digits_of(p);
+#endif
+    using EQ = ExpQuad<exp_digits>;
+    static constexpr int n_exp = exp_size<exp_digits>();
+    static constexpr int n_dexp = 2*7*7;
+    std::array<int, EQ::s + 1> _exp_off;
+    std::array<std::complex<T>, p + 1> _exp_mi;
+    avector<std::complex<T>> _exp_eim;
+    avector<std::complex<T>> _dexp;
+    int _exp_rot_class;
+    std::array<std::array<std::complex<T>, 4*p + 1>, 3> _exp_ephi;
+    mutable avector<Vector<std::complex<T>, N>> _exp_w;
+    mutable std::vector<int> _exp_slot;
+    mutable std::vector<int> _exp_src;
 
     mutable std::vector<LevelData<std::array<Vector<std::complex<T>, N>, nm2i(p, p) + 1>>> _M;
     mutable std::vector<LevelData<std::array<Vector<std::complex<T>, N>, nm2i(p, p) + 1>>> _L;
@@ -473,8 +493,6 @@ public:
             }
         }
 
-        // Who owns what follows from the tree and the rank count alone, so each
-        // rank works out every rank's share here rather than asking for it.
         const auto fill_owner_order = [&](unsigned char role, std::vector<int>& order, std::vector<int>& displ) {
             order.reserve(_n_particle);
             displ.assign(_size + 1, 0);
@@ -505,6 +523,55 @@ public:
         }
         _Qlocal.resize(_source_index.size());
         _Ulocal.resize(_target_index.size());
+
+        {
+            _exp_off[0] = 0;
+            for (int k=0; k<EQ::s; ++k) {
+                _exp_off[k + 1] = _exp_off[k] + EQ::M[k]/2;
+            }
+
+            for (int t=0; t<=p; ++t) {
+                _exp_mi[t] = std::polar(static_cast<T>(1), static_cast<T>(t)*static_cast<T>(M_PI/2));
+            }
+
+            _exp_eim.resize(static_cast<std::size_t>(n_exp)*(2*p + 1));
+            for (int k=0; k<EQ::s; ++k) {
+                for (int j=0; j<EQ::M[k]/2; ++j) {
+                    const T alpha = 2*M_PI*j/EQ::M[k];
+                    std::complex<T>* eim = _exp_eim.data() + static_cast<std::size_t>(_exp_off[k] + j)*(2*p + 1);
+                    for (int m=-p; m<=p; ++m) {
+                        eim[m + p] = std::polar(static_cast<T>(1), m*alpha);
+                    }
+                }
+            }
+
+            _dexp.resize(static_cast<std::size_t>(n_dexp)*n_exp);
+            for (int tz=2; tz<=3; ++tz) {
+                for (int ty=-3; ty<=3; ++ty) {
+                    for (int tx=-3; tx<=3; ++tx) {
+                        std::complex<T>* D = _dexp.data() + static_cast<std::size_t>(dexp_index(tx, ty, tz))*n_exp;
+                        for (int k=0; k<EQ::s; ++k) {
+                            const T lam = EQ::lambda[k];
+                            const T decay = std::exp(-lam*tz);
+                            for (int j=0; j<EQ::M[k]/2; ++j) {
+                                const T alpha = 2*M_PI*j/EQ::M[k];
+                                D[_exp_off[k] + j] = decay*std::polar(static_cast<T>(1),
+                                                                      lam*(tx*std::cos(alpha) + ty*std::sin(alpha)));
+                            }
+                        }
+                    }
+                }
+            }
+
+            const Int3<index_t, zindex_t> ex{1, 0, 0};
+            const Int3<index_t, zindex_t> ey{0, 1, 0};
+            _exp_rot_class = rot_class(ex);
+            for (int q=0; q<=4*p; ++q) {
+                _exp_ephi[0][q] = 1;
+                _exp_ephi[1][q] = get_expphi_of_other(ey)[q];
+                _exp_ephi[2][q] = get_expphi_of_other(ex)[q];
+            }
+        }
 
         _slist.reserve_nrow(_n_particle);
         _slist.reserve(_n_particle*self_generator(0).size());
@@ -846,6 +913,277 @@ public:
 #endif
     }
 
+    static constexpr int dexp_index(int tx, int ty, int tz) noexcept
+    {
+        return (tz - 2)*49 + (ty + 3)*7 + (tx + 3);
+    }
+
+    template<typename Int3_t>
+    static bool exp_direction(const Int3_t& dijk, int dir, int& tx, int& ty, int& tz) noexcept
+    {
+        const int i = -dijk.i;
+        const int j = -dijk.j;
+        const int k = -dijk.k;
+
+        switch (dir) {
+        case 0: if (k >= 2)  { tx =  i; ty =  j; tz =  k; return true; } break;
+        case 1: if (k <= -2) { tx =  i; ty =  j; tz = -k; return true; } break;
+        case 2: if (absi(k) <= 1 && j >= 2)  { tx = -k; ty = -i; tz =  j; return true; } break;
+        case 3: if (absi(k) <= 1 && j <= -2) { tx = -k; ty = -i; tz = -j; return true; } break;
+        case 4: if (absi(k) <= 1 && absi(j) <= 1 && i >= 2)  { tx = -k; ty = j; tz =  i; return true; } break;
+        case 5: if (absi(k) <= 1 && absi(j) <= 1 && i <= -2) { tx = -k; ty = j; tz = -i; return true; } break;
+        }
+
+        return false;
+    }
+
+    template<typename ClusterData_t>
+    void exp_reflect(ClusterData_t& c) const noexcept
+    {
+        for (int nm=0; nm<=nm2i(p, p); ++nm) {
+            if ((_i2n[nm] + absi(_i2m[nm]))%2) {
+                c[nm] = static_cast<T>(-1)*c[nm];
+            }
+        }
+    }
+
+    template<typename ClusterData_t>
+    void exp_rotate(int axis, const ClusterData_t& Ml, ClusterData_t& out) const noexcept
+    {
+        using CV = Vector<std::complex<T>, N>;
+
+        if (axis == 0) {
+            for (int nm=0; nm<=nm2i(p, p); ++nm) {
+                out[nm] = Ml[nm];
+            }
+            return;
+        }
+
+        const std::complex<T>* __restrict ephi = _exp_ephi[axis].data();
+        const T* __restrict R = _rot.data() + static_cast<std::size_t>(_exp_rot_class)*n_rot;
+
+        std::array<CV, nm2i(p, p) + 1> Mt;
+        for (int nm=0; nm<=nm2i(p, p); ++nm) {
+            Mt[nm] = ephi[_i2m[nm] + 2*p]*Ml[nm];
+        }
+
+        for (int n=0; n<=p; ++n) {
+            const T* __restrict Rn = R + _rot_off[n];
+            const int base = nm2i(n, -n);
+            for (int a=0; a<2*n + 1; ++a) {
+                const T* __restrict row = Rn + a*(2*n + 1);
+                CV acc{};
+                for (int b=0; b<2*n + 1; ++b) {
+                    acc += row[b]*Mt[base + b];
+                }
+                out[base + a] = acc;
+            }
+        }
+    }
+
+    template<typename ClusterData_t, typename OutData_t>
+    void exp_unrotate(int axis, const ClusterData_t& Lz, OutData_t& Ll) const noexcept
+    {
+        using CV = Vector<std::complex<T>, N>;
+
+        if (axis == 0) {
+            for (int nm=0; nm<=nm2i(p, p); ++nm) {
+                Ll[nm] += Lz[nm];
+            }
+            return;
+        }
+
+        const std::complex<T>* __restrict ephi = _exp_ephi[axis].data();
+        const T* __restrict R = _rot.data() + static_cast<std::size_t>(_exp_rot_class)*n_rot;
+
+        for (int j=0; j<=p; ++j) {
+            const T* __restrict Rj = R + _rot_off[j];
+            const int base = nm2i(j, -j);
+            std::array<CV, 2*p + 1> Lt;
+            for (int a=0; a<2*j + 1; ++a) {
+                Lt[a] = CV{};
+            }
+            for (int b=0; b<2*j + 1; ++b) {
+                const T* __restrict row = Rj + b*(2*j + 1);
+                const CV v = Lz[base + b];
+                for (int a=0; a<2*j + 1; ++a) {
+                    Lt[a] += row[a]*v;
+                }
+            }
+            for (int a=0; a<2*j + 1; ++a) {
+                Ll[base + a] += ephi[(j - a) + 2*p]*Lt[a];
+            }
+        }
+    }
+
+    template<size_t... I>
+    inline static Vector<std::complex<T>, N> vconj_impl(const Vector<std::complex<T>, N>& v, std::index_sequence<I...>) noexcept
+    {
+        return {std::conj(v[I])...};
+    }
+
+    inline static Vector<std::complex<T>, N> vconj(const Vector<std::complex<T>, N>& v) noexcept
+    {
+        return vconj_impl(v, std::make_index_sequence<N>{});
+    }
+
+    template<typename ClusterData_t>
+    void M2X(T d, const ClusterData_t& M, Vector<std::complex<T>, N>* __restrict W) const noexcept
+    {
+        using CV = Vector<std::complex<T>, N>;
+
+        for (int k=0; k<EQ::s; ++k) {
+            const T lam = static_cast<T>(EQ::lambda[k])/d;
+
+            std::array<CV, p + 1> F;
+            for (int m=0; m<=p; ++m) {
+                T pw = std::pow(lam, m);
+                CV f{};
+                for (int n=m; n<=p; ++n) {
+                    f += (_A[nposm2i(n, m)]*pw)*M[nm2i(n, m)];
+                    pw *= lam;
+                }
+                F[m] = f;
+            }
+
+            const T pref = static_cast<T>(EQ::w[k])/d/EQ::M[k];
+            for (int j=0; j<EQ::M[k]/2; ++j) {
+                const int e = _exp_off[k] + j;
+                const std::complex<T>* __restrict eim = _exp_eim.data() + static_cast<std::size_t>(e)*(2*p + 1);
+                CV acc = F[0];
+                for (int m=1; m<=p; ++m) {
+                    const CV z = eim[m + p]*F[m];
+                    acc += _exp_mi[m]*(z + vconj(z));
+                }
+                W[e] = pref*acc;
+            }
+        }
+    }
+
+    template<typename ClusterData_t>
+    void X2L(T d, const Vector<std::complex<T>, N>* __restrict V, ClusterData_t& L) const noexcept
+    {
+        using CV = Vector<std::complex<T>, N>;
+
+        for (int k=0; k<EQ::s; ++k) {
+            const T lam = static_cast<T>(EQ::lambda[k])/d;
+
+            std::array<CV, p + 1> G;
+            for (int m=0; m<=p; ++m) {
+                G[m] = CV{};
+            }
+            for (int j=0; j<EQ::M[k]/2; ++j) {
+                const int e = _exp_off[k] + j;
+                const std::complex<T>* __restrict eim = _exp_eim.data() + static_cast<std::size_t>(e)*(2*p + 1);
+                const CV c = vconj(V[e]);
+                const CV even = V[e] + c;
+                const CV odd = V[e] - c;
+                for (int m=0; m<=p; ++m) {
+                    G[m] += eim[p - m]*(m%2 ? odd : even);
+                }
+            }
+
+            for (int m=0; m<=p; ++m) {
+                const CV g = _exp_mi[m]*G[m];
+                const CV gc = vconj(g);
+                T pw = std::pow(-lam, m);
+                for (int n=m; n<=p; ++n) {
+                    const T a = _A[nposm2i(n, m)]*pw;
+                    L[nm2i(n, m)] += a*g;
+                    if (m > 0) {
+                        L[nm2i(n, -m)] += a*gc;
+                    }
+                    pw *= -lam;
+                }
+            }
+        }
+    }
+
+    template<typename LevelData_t>
+    void M2L_exp(int l, const LevelData_t& Ml, LevelData_t& Ll) const noexcept
+    {
+        using CV = Vector<std::complex<T>, N>;
+        using Cluster_t = std::array<CV, nm2i(p, p) + 1>;
+
+        const auto& olevel = _partitioner.octreeLevel(l);
+        const auto& ilist = olevel.ilist();
+        const T d = _width/(1 << l);
+        const int nn = olevel.n_node();
+        const int i0 = begin(nn, _size, _rank);
+        const int i1 = end(nn, _size, _rank);
+
+        _exp_slot.assign(nn, -1);
+        _exp_src.clear();
+
+        std::vector<CV> V(n_exp);
+        Cluster_t Mr, Lr;
+
+        for (int dir=0; dir<6; ++dir) {
+            const int axis = dir/2;
+            const bool refl = dir%2;
+
+            for (const int b: _exp_src) {
+                _exp_slot[b] = -1;
+            }
+            _exp_src.clear();
+            for (int i=i0; i<i1; ++i) {
+                for (int inz=0; inz<ilist.nnz(i); ++inz) {
+                    const auto& [ii, dijk] = ilist.value(i, inz);
+                    int tx, ty, tz;
+                    if (exp_direction(dijk, dir, tx, ty, tz) && _exp_slot[ii] < 0) {
+                        _exp_slot[ii] = static_cast<int>(_exp_src.size());
+                        _exp_src.push_back(ii);
+                    }
+                }
+            }
+            if (_exp_src.empty()) {
+                continue;
+            }
+
+            _exp_w.resize(_exp_src.size()*n_exp);
+            for (std::size_t si=0; si<_exp_src.size(); ++si) {
+                exp_rotate(axis, Ml[_exp_src[si]], Mr);
+                if (refl) {
+                    exp_reflect(Mr);
+                }
+                M2X(d, Mr, _exp_w.data() + si*n_exp);
+            }
+
+            for (int i=i0; i<i1; ++i) {
+                bool any = false;
+                for (int inz=0; inz<ilist.nnz(i); ++inz) {
+                    const auto& [ii, dijk] = ilist.value(i, inz);
+                    int tx, ty, tz;
+                    if (!exp_direction(dijk, dir, tx, ty, tz)) {
+                        continue;
+                    }
+                    if (!any) {
+                        std::fill(V.begin(), V.end(), CV{});
+                        any = true;
+                    }
+                    const std::complex<T>* __restrict D =
+                        _dexp.data() + static_cast<std::size_t>(dexp_index(tx, ty, tz))*n_exp;
+                    const CV* __restrict W = _exp_w.data() + static_cast<std::size_t>(_exp_slot[ii])*n_exp;
+                    for (int e=0; e<n_exp; ++e) {
+                        V[e] += D[e]*W[e];
+                    }
+                }
+                if (!any) {
+                    continue;
+                }
+
+                for (int nm=0; nm<=nm2i(p, p); ++nm) {
+                    Lr[nm] = CV{};
+                }
+                X2L(d, V.data(), Lr);
+                if (refl) {
+                    exp_reflect(Lr);
+                }
+                exp_unrotate(axis, Lr, Ll[i]);
+            }
+        }
+    }
+
     template<typename LevelData_t>
     void M2L(int l, const LevelData_t& Ml, LevelData_t& Ll) const noexcept
     {
@@ -1005,7 +1343,11 @@ public:
 
         tic("M2L");
         for (int l=minimum_level; l<=level; ++l) {
+#ifdef FMM_M2L_PLANE_WAVE
+            M2L_exp(l, _M[l], _L[l]);
+#else
             M2L(l, _M[l], _L[l]);
+#endif
         }
         toc("M2L");
 

@@ -9,6 +9,7 @@
 #include <ostream>
 #endif
 #include <utility>
+#include <cstdint>
 #include <vector>
 
 
