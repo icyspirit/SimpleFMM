@@ -66,6 +66,13 @@ constexpr int get_expansion_order_empirical(T tol)
 }
 
 
+enum ParticleRole : unsigned char {
+    SOURCE = 1,
+    TARGET = 2,
+    BOTH = SOURCE | TARGET
+};
+
+
 inline constexpr int nm2i(int n, int m) noexcept
 {
     return n*(n + 1) + m;
@@ -150,8 +157,12 @@ private:
     int _size, _rank;
     // Solid harmonics are held only for the particles this rank reduces and
     // evaluates, in the order N2M and L2N walk them, so no index map is needed.
+    std::vector<unsigned char> _role;
     std::vector<int> _local_off;
-    std::vector<int> _local_index;
+    std::vector<int> _src_off;
+    std::vector<int> _tgt_off;
+    std::vector<int> _source_index;
+    std::vector<int> _target_index;
     avector<T> _phi;
     avector<std::array<T, nm2i(p, p) + 1>> _Zrho;
     avector<std::array<Vector<std::complex<T>, dim>, nm2i(p, p) + 1>> _Zgrho;
@@ -205,7 +216,9 @@ private:
     }
 
 public:
-    FMM3D(const Partitioner_t& partitioner, MPI_Comm comm, const std::function<std::vector<int>(int)>& self_generator):
+    FMM3D(const Partitioner_t& partitioner, MPI_Comm comm,
+          const std::function<std::vector<int>(int)>& self_generator,
+          std::vector<unsigned char> roles = {}):
         _partitioner{partitioner},
         _comm{comm},
         _positions{partitioner.positions()},
@@ -215,30 +228,59 @@ public:
         MPI_Comm_size(_comm, &_size);
         MPI_Comm_rank(_comm, &_rank);
 
-        _local_off.resize(_partitioner.level() + 2);
+        _role = std::move(roles);
+        if (_role.empty()) {
+            _role.assign(_n_particle, BOTH);
+        } else if (static_cast<int>(_role.size()) != _n_particle) {
+            throw std::runtime_error("FMM3D: one role per particle is required");
+        }
+
+        const int n_level = _partitioner.level();
+        _local_off.resize(n_level + 2);
+        _src_off.resize(n_level + 2);
+        _tgt_off.resize(n_level + 2);
         _local_off[0] = 0;
-        for (int l=0; l<=_partitioner.level(); ++l) {
+        _src_off[0] = 0;
+        _tgt_off[0] = 0;
+        for (int l=0; l<=n_level; ++l) {
             const auto& olevel = _partitioner.octreeLevel(l);
             const auto& indices = olevel.indices();
             const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
-            _local_off[l + 1] = _local_off[l] + static_cast<int>(indices.nnz(leaf0, leaf1));
+            int n_all = 0, n_src = 0, n_tgt = 0;
+            for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
+                for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                    const unsigned char r = _role[std::get<0>(indices.value(i_leaf, inz))];
+                    ++n_all;
+                    n_src += (r & SOURCE) != 0;
+                    n_tgt += (r & TARGET) != 0;
+                }
+            }
+            _local_off[l + 1] = _local_off[l] + n_all;
+            _src_off[l + 1] = _src_off[l] + n_src;
+            _tgt_off[l + 1] = _tgt_off[l] + n_tgt;
         }
-        const int n_local = _local_off[_partitioner.level() + 1];
-        _local_index.reserve(n_local);
-        _phi.resize(n_local);
-        _Zrho.resize(n_local);
-        _Zgrho.resize(static_cast<std::size_t>(n_local)*support_gradient);
+        _phi.resize(_local_off[n_level + 1]);
+        _Zrho.resize(_local_off[n_level + 1]);
+        _Zgrho.resize(static_cast<std::size_t>(_src_off[n_level + 1])*support_gradient);
+        _source_index.reserve(_src_off[n_level + 1]);
+        _target_index.reserve(_tgt_off[n_level + 1]);
 
-        for (int l=0; l<=_partitioner.level(); ++l) {
+        for (int l=0; l<=n_level; ++l) {
             const auto& olevel = _partitioner.octreeLevel(l);
             const auto& indices = olevel.indices();
             const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
             int slot = _local_off[l];
+            int src = _src_off[l];
             for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
                 const Coord_t center = _partitioner.box().get_center(l, olevel.c_node()[olevel.from_leaf(i_leaf)]);
-                for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                for (int inz=0; inz<indices.nnz(i_leaf); ++inz, ++slot) {
                     const int i = std::get<0>(indices.value(i_leaf, inz));
-                    _local_index.emplace_back(i);
+                    if (_role[i] & SOURCE) {
+                        _source_index.emplace_back(i);
+                    }
+                    if (_role[i] & TARGET) {
+                        _target_index.emplace_back(i);
+                    }
 
                     const Coord_t delta = _partitioner.box().rotate(_positions[i]) - center;
                     const T rho = delta.norm();
@@ -253,27 +295,29 @@ public:
                     }
 
                     if constexpr (support_gradient) {
-                        const Matrix<std::complex<T>, dim, dim> rot{
-                            std::sin(theta)*std::cos(_phi[slot]), std::sin(theta)*std::sin(_phi[slot]), std::cos(theta),
-                            std::cos(theta)*std::cos(_phi[slot]), std::cos(theta)*std::sin(_phi[slot]), -std::sin(theta),
-                            -std::sin(_phi[slot]), std::cos(_phi[slot]), 0
-                        };
+                        if (_role[i] & SOURCE) {
+                            const Matrix<std::complex<T>, dim, dim> rot{
+                                std::sin(theta)*std::cos(_phi[slot]), std::sin(theta)*std::sin(_phi[slot]), std::cos(theta),
+                                std::cos(theta)*std::cos(_phi[slot]), std::cos(theta)*std::sin(_phi[slot]), -std::sin(theta),
+                                -std::sin(_phi[slot]), std::cos(_phi[slot]), 0
+                            };
 
-                        T rhonm1 = 1;
-                        for (int n=1; n<=p; ++n) {
-                            for (int m=-n; m<=n; ++m) {
-                                const Vector<std::complex<T>, dim> vec{
-                                    std::polar(n*rhonm1*Z(n, m, theta), -m*_phi[slot]),
-                                    std::polar(rhonm1/std::sin(theta)*(std::sqrt(static_cast<T>((n + 1)*(n + 1) - m*m))*Z(n + 1, m, theta) - (n + 1)*std::cos(theta)*Z(n, m, theta)), -m*_phi[slot]),
-                                    std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[slot] + M_PI/2))
-                                };
-                                _Zgrho[slot][nm2i(n, m)] = _partitioner.box().template unrotate<std::complex<T>>(rot.dot(vec));
+                            T rhonm1 = 1;
+                            for (int n=1; n<=p; ++n) {
+                                for (int m=-n; m<=n; ++m) {
+                                    const Vector<std::complex<T>, dim> vec{
+                                        std::polar(n*rhonm1*Z(n, m, theta), -m*_phi[slot]),
+                                        std::polar(rhonm1/std::sin(theta)*(std::sqrt(static_cast<T>((n + 1)*(n + 1) - m*m))*Z(n + 1, m, theta) - (n + 1)*std::cos(theta)*Z(n, m, theta)), -m*_phi[slot]),
+                                        std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[slot] + M_PI/2))
+                                    };
+                                    _Zgrho[src][nm2i(n, m)] = _partitioner.box().template unrotate<std::complex<T>>(rot.dot(vec));
+                                }
+                                rhonm1 *= rho;
                             }
-                            rhonm1 *= rho;
                         }
                     }
 
-                    ++slot;
+                    src += (_role[i] & SOURCE) != 0;
                 }
             }
         }
@@ -448,12 +492,11 @@ public:
         return _partitioner;
     }
 
-    // Global indices of the particles this rank reduces and evaluates, in the
-    // order N2M and L2N walk them.  Every particle belongs to exactly one rank.
     // Who owns what is a pure function of the tree and the rank count, so every
     // rank can work out the whole owner-major listing without asking anyone:
-    // rank r holds order[displ[r] .. displ[r + 1]).
-    void owner_order(std::vector<int>& order, std::vector<int>& displ) const
+    // rank r holds order[displ[r] .. displ[r + 1]).  Pass SOURCE for the order
+    // Q is given in, TARGET for the one U comes back in.
+    void owner_order(unsigned char role, std::vector<int>& order, std::vector<int>& displ) const
     {
         order.clear();
         order.reserve(_n_particle);
@@ -465,7 +508,10 @@ public:
                 const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, r);
                 for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
                     for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
-                        order.emplace_back(std::get<0>(indices.value(i_leaf, inz)));
+                        const int i = std::get<0>(indices.value(i_leaf, inz));
+                        if (_role[i] & role) {
+                            order.emplace_back(i);
+                        }
                     }
                 }
             }
@@ -473,14 +519,27 @@ public:
         }
     }
 
-    inline int n_local() const noexcept
+    inline int n_source() const noexcept
     {
-        return static_cast<int>(_local_index.size());
+        return static_cast<int>(_source_index.size());
     }
 
-    inline const std::vector<int>& local_index() const noexcept
+    inline int n_target() const noexcept
     {
-        return _local_index;
+        return static_cast<int>(_target_index.size());
+    }
+
+    // Global indices of the particles this rank reduces, and of the ones it
+    // evaluates, in the order N2M and L2N walk them.  Each belongs to exactly
+    // one rank.  Without roles the two lists are the same.
+    inline const std::vector<int>& source_index() const noexcept
+    {
+        return _source_index;
+    }
+
+    inline const std::vector<int>& target_index() const noexcept
+    {
+        return _target_index;
     }
 
     inline MPI_Comm comm() const noexcept
@@ -583,9 +642,13 @@ public:
 
         const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
         int slot = _local_off[l];
+        int src = _src_off[l];
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz, ++slot) {
+                if (!(_role[std::get<0>(indices.value(i_leaf, inz))] & SOURCE)) {
+                    continue;
+                }
                 std::array<std::complex<T>, p + 1> E;
                 if constexpr (!gradient) {
                     const std::complex<T> estep{std::cos(_phi[slot]), -std::sin(_phi[slot])};
@@ -597,12 +660,13 @@ public:
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
                     if constexpr (!gradient) {
                         const int m = _i2m[nm];
-                        M[i_node][nm] += r2c(Q[slot]*_Zrho[slot][nm], m >= 0 ? E[m] : std::conj(E[-m]));
+                        M[i_node][nm] += r2c(Q[src]*_Zrho[slot][nm], m >= 0 ? E[m] : std::conj(E[-m]));
                     } else {
                         static_assert(N == 3);
-                        M[i_node][nm] += Vector<std::complex<T>, N>{Q[slot][0], Q[slot][1], Q[slot][2]}.cross(_Zgrho[slot][nm]);
+                        M[i_node][nm] += Vector<std::complex<T>, N>{Q[src][0], Q[src][1], Q[src][2]}.cross(_Zgrho[src][nm]);
                     }
                 }
+                ++src;
             }
         }
     }
@@ -804,9 +868,13 @@ public:
 
         const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
         int slot = _local_off[l];
+        int tgt = _tgt_off[l];
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz, ++slot) {
+                if (!(_role[std::get<0>(indices.value(i_leaf, inz))] & TARGET)) {
+                    continue;
+                }
                 std::array<std::complex<T>, p + 1> F;
                 const std::complex<T> estep{std::cos(_phi[slot]), std::sin(_phi[slot])};
                 F[0] = 1;
@@ -816,8 +884,9 @@ public:
                 #pragma omp simd
                 for (int jk=0; jk<=nm2i(p, p); ++jk) {
                     const int m = _i2m[jk];
-                    U[slot] += _Zrho[slot][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
+                    U[tgt] += _Zrho[slot][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
                 }
+                ++tgt;
             }
         }
     }
@@ -828,6 +897,9 @@ public:
         static_assert(support_gradient || !gradient);
 
         for (int i=begin(_n_particle, _size, _rank); i<end(_n_particle, _size, _rank); ++i) {
+            if (!(_role[i] & TARGET)) {
+                continue;
+            }
             const auto& [li, i_leaf] = _partitioner.get_partition(i);
             const auto& nlist = _partitioner.octreeLevel(li).nlist();
             for (int inz=0; inz<nlist.nnz(i_leaf); ++inz) {
@@ -835,7 +907,7 @@ public:
                 const auto& indices = _partitioner.octreeLevel(lj).indices();
                 for (int jnz=0; jnz<indices.nnz(j_leaf); ++jnz) {
                     const int j = std::get<0>(indices.value(j_leaf, jnz));
-                    if (!is_self(i, j)) {
+                    if ((_role[j] & SOURCE) && !is_self(i, j)) {
                         if constexpr (!gradient) {
                             U[i] += Q[j]/(_positions[i] - _positions[j]).norm();
                         } else {
@@ -849,6 +921,9 @@ public:
 
             for (int inz=0; inz<_slist.nnz(i); ++inz) {
                 const int j = std::get<0>(_slist.value(i, inz));
+                if (!(_role[j] & SOURCE)) {
+                    continue;
+                }
                 if constexpr (!gradient) {
                     U[i] -= Q[j]/(_positions[i] - _positions[j]).norm();
                 } else {
@@ -860,9 +935,9 @@ public:
         }
     }
 
-    // Q and U are indexed by local slot, not by particle: n_local() entries in
-    // the order local_index() reports.  A caller that keeps whole-particle
-    // vectors should use rinv, which packs and unpacks around this.
+    // Q holds n_source() entries in source_index() order and U holds n_target()
+    // entries in target_index() order, not one per particle.  A caller that
+    // keeps whole-particle vectors should use rinv, which packs around this.
     template<bool gradient=false>
     void rinv_nonear(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
     {
@@ -921,14 +996,14 @@ public:
     {
         static_assert(support_gradient || !gradient);
 
-        const int n_local = static_cast<int>(_local_index.size());
-        std::vector<Vector<T, N>> Ql(n_local), Ul(n_local);
-        for (int k=0; k<n_local; ++k) {
-            Ql[k] = Q[_local_index[k]];
+        std::vector<Vector<T, N>> Ql(_source_index.size());
+        std::vector<Vector<T, N>> Ul(_target_index.size());
+        for (std::size_t k=0; k<_source_index.size(); ++k) {
+            Ql[k] = Q[_source_index[k]];
         }
         rinv_nonear<gradient>(Ql.data(), Ul.data());
-        for (int k=0; k<n_local; ++k) {
-            U[_local_index[k]] += Ul[k];
+        for (std::size_t k=0; k<_target_index.size(); ++k) {
+            U[_target_index[k]] += Ul[k];
         }
 
         tic("N2N");
