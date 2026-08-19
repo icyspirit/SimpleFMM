@@ -450,6 +450,11 @@ public:
 
     // Global indices of the particles this rank reduces and evaluates, in the
     // order N2M and L2N walk them.  Every particle belongs to exactly one rank.
+    inline int n_local() const noexcept
+    {
+        return static_cast<int>(_local_index.size());
+    }
+
     inline const std::vector<int>& local_index() const noexcept
     {
         return _local_index;
@@ -558,7 +563,6 @@ public:
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz, ++slot) {
-                const int i = std::get<0>(indices.value(i_leaf, inz));
                 std::array<std::complex<T>, p + 1> E;
                 if constexpr (!gradient) {
                     const std::complex<T> estep{std::cos(_phi[slot]), -std::sin(_phi[slot])};
@@ -570,10 +574,10 @@ public:
                 for (int nm=0; nm<=nm2i(p, p); ++nm) {
                     if constexpr (!gradient) {
                         const int m = _i2m[nm];
-                        M[i_node][nm] += r2c(Q[i]*_Zrho[slot][nm], m >= 0 ? E[m] : std::conj(E[-m]));
+                        M[i_node][nm] += r2c(Q[slot]*_Zrho[slot][nm], m >= 0 ? E[m] : std::conj(E[-m]));
                     } else {
                         static_assert(N == 3);
-                        M[i_node][nm] += Vector<std::complex<T>, N>{Q[i][0], Q[i][1], Q[i][2]}.cross(_Zgrho[slot][nm]);
+                        M[i_node][nm] += Vector<std::complex<T>, N>{Q[slot][0], Q[slot][1], Q[slot][2]}.cross(_Zgrho[slot][nm]);
                     }
                 }
             }
@@ -780,7 +784,6 @@ public:
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
             const int i_node = olevel.from_leaf(i_leaf);
             for (int inz=0; inz<indices.nnz(i_leaf); ++inz, ++slot) {
-                const int i = std::get<0>(indices.value(i_leaf, inz));
                 std::array<std::complex<T>, p + 1> F;
                 const std::complex<T> estep{std::cos(_phi[slot]), std::sin(_phi[slot])};
                 F[0] = 1;
@@ -790,7 +793,7 @@ public:
                 #pragma omp simd
                 for (int jk=0; jk<=nm2i(p, p); ++jk) {
                     const int m = _i2m[jk];
-                    U[i] += _Zrho[slot][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
+                    U[slot] += _Zrho[slot][jk]*c2r(L[i_node][jk], m >= 0 ? F[m] : std::conj(F[-m]));
                 }
             }
         }
@@ -834,6 +837,9 @@ public:
         }
     }
 
+    // Q and U are indexed by local slot, not by particle: n_local() entries in
+    // the order local_index() reports.  A caller that keeps whole-particle
+    // vectors should use rinv, which packs and unpacks around this.
     template<bool gradient=false>
     void rinv_nonear(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
     {
@@ -892,7 +898,16 @@ public:
     {
         static_assert(support_gradient || !gradient);
 
-        rinv_nonear<gradient>(Q, U);
+        const int n_local = static_cast<int>(_local_index.size());
+        std::vector<Vector<T, N>> Ql(n_local), Ul(n_local);
+        for (int k=0; k<n_local; ++k) {
+            Ql[k] = Q[_local_index[k]];
+        }
+        rinv_nonear<gradient>(Ql.data(), Ul.data());
+        for (int k=0; k<n_local; ++k) {
+            U[_local_index[k]] += Ul[k];
+        }
+
         tic("N2N");
         N2N<gradient>(Q, U, is_self);
         toc("N2N");
