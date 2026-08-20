@@ -52,20 +52,30 @@ constexpr int get_expansion_order(T tol)
 }
 
 
-// Measured relative L2 error of the far field against direct summation, on a
-// uniform cube and on a torus shell alike:
+// The rate is the geometric one, sqrt(3)/4: a source box's half-diagonal over
+// the closest centre separation an interaction list allows.  Only the constant
+// is measured, and it has to be: it is the one part that depends on how the
+// charges sit rather than on where the boxes are.  Relative L2 error of the far
+// field against direct summation, N = 50000:
 //
-//   p           6        8       10       12       14       16
-//   error   1.2e-4   1.9e-5   2.2e-6   6.2e-7   1.1e-7   2.9e-8
+//   p           4        6        8       10       12       14       16       18
+//   cube    6.4e-4   8.1e-5   1.4e-5   2.2e-6   6.2e-7   1.1e-7   2.0e-8   7.1e-9
+//   torus        -        -        -        -   4.8e-7   1.0e-7   2.4e-8        -
+//   model   4.9e-4   9.2e-5   1.7e-5   3.2e-6   6.1e-7   1.1e-7   2.1e-8   4.0e-9
 //
-// which is c*a^p with a = 0.45 and c = 0.01.  Contracting the field against
-// test functions costs a further factor of about 1.8, so c is set to bound
-// that rather than the field itself.
+// Fitting the rate as well gives 0.4445 over this range, so the geometry has it.
+//
+// The model stops holding past p = 18, where the measured curve flattens out
+// around 1e-10 as the O(p^3) rotation recursions accumulate roundoff -- the
+// plane-wave path, which does less arithmetic per pair, sits a factor of two
+// below it there.  Asking for less than 1e-9 therefore returns an order that is
+// one or two short.  This is the far field alone; a caller that contracts it
+// against test functions pays its own factor on top.
 template<typename T>
 constexpr int get_expansion_order_empirical(T tol)
 {
-    constexpr T c = 0.02;
-    constexpr T a = 0.45;
+    constexpr T c = 0.014;
+    constexpr T a = 0.4330127018922193;   // sqrt(3)/4
     constexpr int Lmin = 0;
 
     int L = 0;
