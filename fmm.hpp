@@ -166,11 +166,8 @@ private:
     std::vector<int> _tgt_off;
     std::vector<int> _source_index;
     std::vector<int> _target_index;
-    std::vector<int> _src_order;
-    std::vector<int> _src_displ;
     std::vector<int> _tgt_order;
     std::vector<int> _tgt_displ;
-    std::vector<int> _src_counts;
     std::vector<int> _tgt_counts;
     std::vector<int> _tgt_displs;
     mutable std::vector<Vector<T, N>> _Qlocal;
@@ -498,14 +495,11 @@ public:
                 displ[r + 1] = static_cast<int>(order.size());
             }
         };
-        fill_owner_order(SOURCE, _src_order, _src_displ);
         fill_owner_order(TARGET, _tgt_order, _tgt_displ);
 
-        _src_counts.resize(_size);
         _tgt_counts.resize(_size);
         _tgt_displs.resize(_size);
         for (int r=0; r<_size; ++r) {
-            _src_counts[r] = N*(_src_displ[r + 1] - _src_displ[r]);
             _tgt_counts[r] = N*(_tgt_displ[r + 1] - _tgt_displ[r]);
             _tgt_displs[r] = N*_tgt_displ[r];
         }
@@ -546,16 +540,6 @@ public:
     const auto& partitioner() const noexcept
     {
         return _partitioner;
-    }
-
-    inline const std::vector<int>& source_owner_order() const noexcept
-    {
-        return _src_order;
-    }
-
-    inline const std::vector<int>& source_owner_displ() const noexcept
-    {
-        return _src_displ;
     }
 
     inline const std::vector<int>& target_owner_order() const noexcept
@@ -1050,15 +1034,16 @@ public:
         static_assert(support_gradient || !gradient);
         check_mpi_count();
 
-        // U stands in for the source-ordered copy until the results land in it.
-        for (std::size_t k=0; k<_src_order.size(); ++k) {
-            U[k] = Q[_src_order[k]];
+        // A reduce-scatter moves half the bytes but measures ~2x slower here:
+        // the irregular form misses the tuned paths an allreduce lands on.
+        MPI_Allreduce(MPI_IN_PLACE, &Q[0][0], N*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
+        for (std::size_t k=0; k<_source_index.size(); ++k) {
+            _Qlocal[k] = Q[_source_index[k]];
         }
-        MPI_Reduce_scatter(&U[0][0], &_Qlocal[0][0], _src_counts.data(),
-                           get_mpi_type<T>(), MPI_SUM, _comm);
 
         far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
 
+        // Each result has exactly one producer, so gathering beats reducing.
         MPI_Allgatherv(&_Ulocal[0][0], N*static_cast<int>(_target_index.size()), get_mpi_type<T>(),
                        &Q[0][0], _tgt_counts.data(), _tgt_displs.data(), get_mpi_type<T>(), _comm);
         // Without roles every particle is a target and the scatter covers U.
