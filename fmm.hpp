@@ -1343,10 +1343,10 @@ public:
 
         tic("M2L");
         for (int l=minimum_level; l<=level; ++l) {
-#ifdef FMM_M2L_PLANE_WAVE
-            M2L_exp(l, _M[l], _L[l]);
-#else
+#ifdef FMM_M2L_ROTATION
             M2L(l, _M[l], _L[l]);
+#else
+            M2L_exp(l, _M[l], _L[l]);
 #endif
         }
         toc("M2L");
