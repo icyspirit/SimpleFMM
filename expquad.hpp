@@ -71,9 +71,21 @@ struct ExpQuad<9> {
 };
 
 
+// Each table has an error floor that no expansion order can get below, so the
+// table has to be chosen against the truncation error at p.  Measured relative
+// L2 error of the far field against direct summation:
+//
+//        p       4        8       10       12       13       14       16
+//   RTR      8.9e-4   1.9e-5   2.2e-6   6.2e-7   3.2e-7   1.1e-7   2.9e-8
+//   3-digit  1.3e-3   8.4e-4   8.4e-4   8.4e-4        -        -   8.4e-4
+//   6-digit  8.9e-4   1.9e-5   2.2e-6   7.3e-7   4.3e-7   2.9e-7   4.6e-7
+//   9-digit  8.9e-4   1.9e-5   2.2e-6   6.2e-7   3.2e-7        -   3.5e-8
+//
+// The boundaries below keep the loss under 1.2x.  9-digit shows no floor
+// through p = 24.
 constexpr int exp_digits_of(int p) noexcept
 {
-    return p <= 9 ? 3 : (p <= 18 ? 6 : 9);
+    return p <= 3 ? 3 : (p <= 12 ? 6 : 9);
 }
 
 
