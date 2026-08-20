@@ -9,7 +9,10 @@
 #include "matrix.hpp"
 #include "partition.hpp"
 #include "tree.hpp"
+#include <algorithm>
 #include <array>
+#include <climits>
+#include <stdexcept>
 #include <cassert>
 #include <cmath>
 #include <complex>
@@ -163,6 +166,23 @@ private:
     std::vector<int> _tgt_off;
     std::vector<int> _source_index;
     std::vector<int> _target_index;
+    std::vector<int> _src_order;
+    std::vector<int> _src_displ;
+    std::vector<int> _tgt_order;
+    std::vector<int> _tgt_displ;
+    std::vector<int> _src_counts;
+    std::vector<int> _tgt_counts;
+    std::vector<int> _tgt_displs;
+    mutable std::vector<Vector<T, N>> _Qlocal;
+    mutable std::vector<Vector<T, N>> _Ulocal;
+
+    void check_mpi_count() const
+    {
+        // MPI counts are int; fail loudly rather than narrow silently.
+        if (static_cast<std::size_t>(N)*_n_particle > static_cast<std::size_t>(INT_MAX)) {
+            throw std::overflow_error("FMM3D: MPI count exceeds INT_MAX");
+        }
+    }
     avector<T> _phi;
     avector<std::array<T, nm2i(p, p) + 1>> _Zrho;
     avector<std::array<Vector<std::complex<T>, dim>, nm2i(p, p) + 1>> _Zgrho;
@@ -456,6 +476,42 @@ public:
             }
         }
 
+        // Who owns what follows from the tree and the rank count alone, so each
+        // rank works out every rank's share here rather than asking for it.
+        const auto fill_owner_order = [&](unsigned char role, std::vector<int>& order, std::vector<int>& displ) {
+            order.reserve(_n_particle);
+            displ.assign(_size + 1, 0);
+            for (int r=0; r<_size; ++r) {
+                for (int l=0; l<=n_level; ++l) {
+                    const auto& olevel = _partitioner.octreeLevel(l);
+                    const auto& indices = olevel.indices();
+                    const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, r);
+                    for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
+                        for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                            const int i = std::get<0>(indices.value(i_leaf, inz));
+                            if (_role[i] & role) {
+                                order.emplace_back(i);
+                            }
+                        }
+                    }
+                }
+                displ[r + 1] = static_cast<int>(order.size());
+            }
+        };
+        fill_owner_order(SOURCE, _src_order, _src_displ);
+        fill_owner_order(TARGET, _tgt_order, _tgt_displ);
+
+        _src_counts.resize(_size);
+        _tgt_counts.resize(_size);
+        _tgt_displs.resize(_size);
+        for (int r=0; r<_size; ++r) {
+            _src_counts[r] = N*(_src_displ[r + 1] - _src_displ[r]);
+            _tgt_counts[r] = N*(_tgt_displ[r + 1] - _tgt_displ[r]);
+            _tgt_displs[r] = N*_tgt_displ[r];
+        }
+        _Qlocal.resize(_source_index.size());
+        _Ulocal.resize(_target_index.size());
+
         _slist.reserve_nrow(_n_particle);
         _slist.reserve(_n_particle*self_generator(0).size());
         for (int i=0; i<_n_particle; ++i) {
@@ -492,31 +548,24 @@ public:
         return _partitioner;
     }
 
-    // Who owns what is a pure function of the tree and the rank count, so every
-    // rank can work out the whole owner-major listing without asking anyone:
-    // rank r holds order[displ[r] .. displ[r + 1]).  Pass SOURCE for the order
-    // Q is given in, TARGET for the one U comes back in.
-    void owner_order(unsigned char role, std::vector<int>& order, std::vector<int>& displ) const
+    inline const std::vector<int>& source_owner_order() const noexcept
     {
-        order.clear();
-        order.reserve(_n_particle);
-        displ.assign(_size + 1, 0);
-        for (int r=0; r<_size; ++r) {
-            for (int l=0; l<=_partitioner.level(); ++l) {
-                const auto& olevel = _partitioner.octreeLevel(l);
-                const auto& indices = olevel.indices();
-                const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, r);
-                for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
-                    for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
-                        const int i = std::get<0>(indices.value(i_leaf, inz));
-                        if (_role[i] & role) {
-                            order.emplace_back(i);
-                        }
-                    }
-                }
-            }
-            displ[r + 1] = static_cast<int>(order.size());
-        }
+        return _src_order;
+    }
+
+    inline const std::vector<int>& source_owner_displ() const noexcept
+    {
+        return _src_displ;
+    }
+
+    inline const std::vector<int>& target_owner_order() const noexcept
+    {
+        return _tgt_order;
+    }
+
+    inline const std::vector<int>& target_owner_displ() const noexcept
+    {
+        return _tgt_displ;
     }
 
     inline int n_source() const noexcept
@@ -935,13 +984,13 @@ public:
         }
     }
 
-    // Q holds n_source() entries in source_index() order and U holds n_target()
-    // entries in target_index() order, not one per particle.  A caller that
-    // keeps whole-particle vectors should use rinv, which packs around this.
+    // L2N accumulates, so the caller's buffer starts clean.
     template<bool gradient=false>
-    void rinv_nonear(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
+    void far_field_local(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
     {
         static_assert(support_gradient || !gradient);
+
+        std::fill_n(U, _target_index.size(), Vector<T, N>{});
 
         const int level = _partitioner.level();
 
@@ -991,28 +1040,68 @@ public:
         toc("L2L2N");
     }
 
-    template<bool gradient=false, typename IsSelf>
-    void rinv(const Vector<T, N>* Q, Vector<T, N>* U, const IsSelf& is_self) const noexcept
+    // Q and U hold one entry per particle.  Each rank supplies whatever share
+    // of the source term it has and the sum over the communicator is what is
+    // applied; U comes back complete on every rank.  Q is workspace: it is not
+    // preserved, which is what keeps this from needing a buffer of its own.
+    template<bool gradient=false>
+    void rinv_nonear(Vector<T, N>* Q, Vector<T, N>* U) const
     {
         static_assert(support_gradient || !gradient);
+        check_mpi_count();
 
-        std::vector<Vector<T, N>> Ql(_source_index.size());
-        std::vector<Vector<T, N>> Ul(_target_index.size());
-        for (std::size_t k=0; k<_source_index.size(); ++k) {
-            Ql[k] = Q[_source_index[k]];
+        // U stands in for the source-ordered copy until the results land in it.
+        for (std::size_t k=0; k<_src_order.size(); ++k) {
+            U[k] = Q[_src_order[k]];
         }
-        rinv_nonear<gradient>(Ql.data(), Ul.data());
+        MPI_Reduce_scatter(&U[0][0], &_Qlocal[0][0], _src_counts.data(),
+                           get_mpi_type<T>(), MPI_SUM, _comm);
+
+        far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
+
+        MPI_Allgatherv(&_Ulocal[0][0], N*static_cast<int>(_target_index.size()), get_mpi_type<T>(),
+                       &Q[0][0], _tgt_counts.data(), _tgt_displs.data(), get_mpi_type<T>(), _comm);
+        // Without roles every particle is a target and the scatter covers U.
+        if (_tgt_order.size() != static_cast<std::size_t>(_n_particle)) {
+            std::fill_n(U, _n_particle, Vector<T, N>{});
+        }
+        for (std::size_t k=0; k<_tgt_order.size(); ++k) {
+            U[_tgt_order[k]] = Q[k];
+        }
+    }
+
+    template<bool gradient=false, typename IsSelf>
+    void rinv(Vector<T, N>* Q, Vector<T, N>* U, const IsSelf& is_self) const
+    {
+        static_assert(support_gradient || !gradient);
+        check_mpi_count();
+
+        // The near field reads Q at arbitrary neighbours, so unlike the far
+        // field this one cannot be given each rank only its own share.  Q is
+        // completed in place rather than consumed, and stays that way.
+        MPI_Allreduce(MPI_IN_PLACE, &Q[0][0], N*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
+
+        for (std::size_t k=0; k<_source_index.size(); ++k) {
+            _Qlocal[k] = Q[_source_index[k]];
+        }
+        far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
+
+        std::fill_n(U, _n_particle, Vector<T, N>{});
         for (std::size_t k=0; k<_target_index.size(); ++k) {
-            U[_target_index[k]] += Ul[k];
+            U[_target_index[k]] = _Ulocal[k];
         }
 
         tic("N2N");
         N2N<gradient>(Q, U, is_self);
         toc("N2N");
+
+        // N2N and L2N divide the particles differently, so an entry of U can
+        // have been written by two ranks at once.
+        MPI_Allreduce(MPI_IN_PLACE, &U[0][0], N*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
     }
 
     template<bool gradient=false>
-    void rinv(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
+    void rinv(Vector<T, N>* Q, Vector<T, N>* U) const
     {
         static_assert(support_gradient || !gradient);
 
