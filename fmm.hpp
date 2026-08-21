@@ -187,6 +187,9 @@ private:
     std::vector<int> _source_index;
     std::vector<int> _target_index;
     std::vector<int> _tgt_order;
+    std::vector<std::vector<int>> _leaf_load;
+    int _n2n_i0 = 0;
+    int _n2n_i1 = 0;
     std::vector<int> _tgt_displ;
     std::vector<int> _tgt_counts;
     std::vector<int> _tgt_displs;
@@ -292,6 +295,47 @@ public:
         }
 
         const int n_level = _partitioner.level();
+
+        // N2M walks the sources and L2N the targets out of one leaf range, so
+        // the range has to balance their sum.  With every particle in both
+        // lists that weight is uniform, and the cuts have to stay where they
+        // were, so weigh by the particle count instead of doubling it.
+        const bool weighted = std::any_of(_role.cbegin(), _role.cend(),
+                                          [](unsigned char r) noexcept { return r != BOTH; });
+        _leaf_load.resize(n_level + 1);
+        for (int l=0; l<=n_level; ++l) {
+            const auto& olevel = _partitioner.octreeLevel(l);
+            const auto& indices = olevel.indices();
+            auto& scan = _leaf_load[l];
+            scan.assign(olevel.n_leaf() + 1, 0);
+            for (int i_leaf=0; i_leaf<olevel.n_leaf(); ++i_leaf) {
+                int load = 0;
+                for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                    const unsigned char r = _role[std::get<0>(indices.value(i_leaf, inz))];
+                    load += weighted ? ((r & SOURCE) != 0) + ((r & TARGET) != 0) : 1;
+                }
+                scan[i_leaf + 1] = scan[i_leaf] + load;
+            }
+        }
+
+        {
+            int n_target = 0;
+            for (int i=0; i<_n_particle; ++i) {
+                n_target += (_role[i] & TARGET) != 0;
+            }
+            const auto cut = [&](int target) noexcept {
+                int seen = 0;
+                for (int i=0; i<_n_particle; ++i) {
+                    if (seen >= target) {
+                        return i;
+                    }
+                    seen += (_role[i] & TARGET) != 0;
+                }
+                return _n_particle;
+            };
+            _n2n_i0 = cut(begin(n_target, _size, _rank));
+            _n2n_i1 = cut(end(n_target, _size, _rank));
+        }
         _local_off.resize(n_level + 2);
         _src_off.resize(n_level + 2);
         _tgt_off.resize(n_level + 2);
@@ -301,7 +345,7 @@ public:
         for (int l=0; l<=n_level; ++l) {
             const auto& olevel = _partitioner.octreeLevel(l);
             const auto& indices = olevel.indices();
-            const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+            const auto [leaf0, leaf1] = balanced_leaf_range(l, _rank);
             int n_all = 0, n_src = 0, n_tgt = 0;
             for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
                 for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
@@ -324,7 +368,7 @@ public:
         for (int l=0; l<=n_level; ++l) {
             const auto& olevel = _partitioner.octreeLevel(l);
             const auto& indices = olevel.indices();
-            const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+            const auto [leaf0, leaf1] = balanced_leaf_range(l, _rank);
             int slot = _local_off[l];
             int src = _src_off[l];
             for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
@@ -519,7 +563,7 @@ public:
                 for (int l=0; l<=n_level; ++l) {
                     const auto& olevel = _partitioner.octreeLevel(l);
                     const auto& indices = olevel.indices();
-                    const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, r);
+                    const auto [leaf0, leaf1] = balanced_leaf_range(l, r);
                     for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
                         for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
                             const int i = std::get<0>(indices.value(i_leaf, inz));
@@ -730,16 +774,18 @@ public:
         return _A[nposm2i(n, m)];
     }
 
-    // Split [0, n_leaf) so ranks get similar particle counts rather than leaf counts.
-    static std::pair<int, int> balanced_leaf_range(const CSRP<>& indices, int n_leaf, int size, int rank) noexcept
+    // Split [0, n_leaf) so ranks get similar loads rather than leaf counts.
+    std::pair<int, int> balanced_leaf_range(int l, int rank) const noexcept
     {
-        const long long total = indices.nnz();
+        const auto& scan = _leaf_load[l];
+        const int n_leaf = static_cast<int>(scan.size()) - 1;
+        const long long total = scan[n_leaf];
         const auto cut = [&](long long target) noexcept {
             int lo = 0;
             int hi = n_leaf;
             while (lo < hi) {
                 const int mid = (lo + hi)/2;
-                if (indices.nnz(0, mid) < target) {
+                if (scan[mid] < target) {
                     lo = mid + 1;
                 } else {
                     hi = mid;
@@ -748,7 +794,7 @@ public:
             return lo;
         };
 
-        return {cut(begin(total, size, rank)), cut(end(total, size, rank))};
+        return {cut(begin(total, _size, rank)), cut(end(total, _size, rank))};
     }
 
     template<bool gradient=false, typename LevelData_t>
@@ -759,7 +805,7 @@ public:
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& indices = olevel.indices();
 
-        const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+        const auto [leaf0, leaf1] = balanced_leaf_range(l, _rank);
         int slot = _local_off[l];
         int src = _src_off[l];
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
@@ -1256,7 +1302,7 @@ public:
         const auto& olevel = _partitioner.octreeLevel(l);
         const auto& indices = olevel.indices();
 
-        const auto [leaf0, leaf1] = balanced_leaf_range(indices, olevel.n_leaf(), _size, _rank);
+        const auto [leaf0, leaf1] = balanced_leaf_range(l, _rank);
         int slot = _local_off[l];
         int tgt = _tgt_off[l];
         for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
@@ -1286,7 +1332,7 @@ public:
     {
         static_assert(support_gradient || !gradient);
 
-        for (int i=begin(_n_particle, _size, _rank); i<end(_n_particle, _size, _rank); ++i) {
+        for (int i=_n2n_i0; i<_n2n_i1; ++i) {
             if (!(_role[i] & TARGET)) {
                 continue;
             }
