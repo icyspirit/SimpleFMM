@@ -710,10 +710,6 @@ public:
         return _comm;
     }
 
-    const auto& slist() const noexcept
-    {
-        return _slist;
-    }
 
     inline T get_phi_of_child(zindex_t c) const noexcept
     {
@@ -1355,6 +1351,7 @@ public:
                 }
             }
 
+            // as in rinv_nonear: the far field could not leave these out
             for (int inz=0; inz<_slist.nnz(i); ++inz) {
                 const int j = std::get<0>(_slist.value(i, inz));
                 if (!(_role[j] & SOURCE)) {
@@ -1449,6 +1446,27 @@ public:
         }
 
         far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
+
+        // The expansions are taken box by box and cannot leave out a pair, so
+        // the far field carries the self-group pairs that landed in boxes far
+        // enough apart.  Take them out here, while Q still holds the charges,
+        // and both entry points answer with them gone.
+        for (std::size_t k=0; k<_target_index.size(); ++k) {
+            const int i = _target_index[k];
+            for (int inz=0; inz<_slist.nnz(i); ++inz) {
+                const int j = std::get<0>(_slist.value(i, inz));
+                if (!(_role[j] & SOURCE)) {
+                    continue;
+                }
+                if constexpr (!gradient) {
+                    _Ulocal[k] -= Q[j]/(_positions[i] - _positions[j]).norm();
+                } else {
+                    static_assert(N == 3);
+                    const auto R = _positions[i] - _positions[j];
+                    _Ulocal[k] -= Q[j].cross(R)/std::pow(R.norm(), static_cast<T>(3));
+                }
+            }
+        }
 
         // Each result has exactly one producer, so gathering beats reducing.
         MPI_Allgatherv(&_Ulocal[0][0], N*static_cast<int>(_target_index.size()), get_mpi_type<T>(),
