@@ -391,7 +391,6 @@ private:
     int _level;
     std::vector<OctreeLevel> _octreeLevels;
     std::vector<std::pair<int, int>> _partitions;
-    CSRP<> _slist;
 
 public:
     OctreePartitioner(const std::vector<Coord_t>& positions, const Box_t& box):
