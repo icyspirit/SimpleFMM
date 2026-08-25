@@ -18,7 +18,6 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
-#include <functional>
 #include <tuple>
 #include <vector>
 #ifndef NDEBUG
@@ -228,7 +227,6 @@ private:
     avector<T> _rot;
     std::array<int, 2*p + 1> _tz_off;
     avector<T> _tz;
-    CSRP<> _slist;
 
     static constexpr int exp_digits =
 #ifdef FMM_EXP_DIGITS
@@ -276,7 +274,6 @@ private:
 
 public:
     FMM3D(const Partitioner_t& partitioner, MPI_Comm comm,
-          const std::function<std::vector<int>(int)>& self_generator,
           std::vector<unsigned char> roles = {}):
         _partitioner{partitioner},
         _comm{comm},
@@ -636,18 +633,6 @@ public:
             }
         }
 
-        _slist.reserve_nrow(_n_particle);
-        _slist.reserve(_n_particle*self_generator(0).size());
-        for (int i=0; i<_n_particle; ++i) {
-            ++_slist;
-            for (int j: self_generator(i)) {
-                if ((_role[j] & SOURCE) && !_partitioner.is_neighbor(i, j)) {
-                    _slist.emplace_back(j);
-                }
-            }
-        }
-        _slist.finish();
-
         _M.reserve(_partitioner.level() + 1);
         _L.reserve(_partitioner.level() + 1);
         for (int l=0; l<=_partitioner.level(); ++l) {
@@ -657,14 +642,7 @@ public:
 
         if (get_rank() == 0) {
             std::cout << "FMM with p = " << p << ", n_particle = " << _n_particle << std::endl;
-            std::cout << "There are " << _slist.nnz() << " self interactions which are far enough" << std::endl;
         }
-    }
-
-    FMM3D(const Partitioner_t& partitioner, MPI_Comm comm):
-        FMM3D(partitioner, comm, [](int i) { return std::vector{i}; })
-    {
-
     }
 
     const auto& partitioner() const noexcept
@@ -708,11 +686,6 @@ public:
     inline MPI_Comm comm() const noexcept
     {
         return _comm;
-    }
-
-    const auto& slist() const noexcept
-    {
-        return _slist;
     }
 
     inline T get_phi_of_child(zindex_t c) const noexcept
@@ -1355,16 +1328,6 @@ public:
                 }
             }
 
-            for (int inz=0; inz<_slist.nnz(i); ++inz) {
-                const int j = std::get<0>(_slist.value(i, inz));
-                if constexpr (!gradient) {
-                    U[i] -= Q[j]/(_positions[i] - _positions[j]).norm();
-                } else {
-                    static_assert(N == 3);
-                    const auto R = _positions[i] - _positions[j];
-                    U[i] -= Q[j].cross(R)/std::pow(R.norm(), static_cast<T>(3));
-                }
-            }
         }
     }
 
