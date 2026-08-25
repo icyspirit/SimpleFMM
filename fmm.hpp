@@ -641,7 +641,7 @@ public:
         for (int i=0; i<_n_particle; ++i) {
             ++_slist;
             for (int j: self_generator(i)) {
-                if (!_partitioner.is_neighbor(i, j)) {
+                if ((_role[j] & SOURCE) && !_partitioner.is_neighbor(i, j)) {
                     _slist.emplace_back(j);
                 }
             }
@@ -1357,9 +1357,6 @@ public:
 
             for (int inz=0; inz<_slist.nnz(i); ++inz) {
                 const int j = std::get<0>(_slist.value(i, inz));
-                if (!(_role[j] & SOURCE)) {
-                    continue;
-                }
                 if constexpr (!gradient) {
                     U[i] -= Q[j]/(_positions[i] - _positions[j]).norm();
                 } else {
@@ -1436,7 +1433,7 @@ public:
     // applied; U comes back complete on every rank.  Q is workspace: it is not
     // preserved, which is what keeps this from needing a buffer of its own.
     template<bool gradient=false>
-    void rinv_nonear(Vector<T, N>* Q, Vector<T, N>* U) const
+    void rinv_far(Vector<T, N>* Q, Vector<T, N>* U) const
     {
         static_assert(support_gradient || !gradient);
         check_mpi_count();
