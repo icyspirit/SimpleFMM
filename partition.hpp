@@ -92,14 +92,29 @@ public:
     template<typename Box_t>
     void refine(const std::vector<Coord_t>& positions, const Box_t& box, int max_level, int max_particles_per_node) noexcept
     {
+        long crowded = 0;
         traverse(
             [&](OctreeNode* node) {
                 node->subdivide(positions, box);
             },
             [&](const OctreeNode* node) {
-                return node->l() < max_level && static_cast<int>(node->indices().size()) > max_particles_per_node;
+                if (static_cast<int>(node->indices().size()) <= max_particles_per_node) {
+                    return false;
+                }
+                if (node->l() >= max_level) {
+                    ++crowded;
+                    return false;
+                }
+
+                return true;
             }
         );
+
+        if (crowded > 0 && get_rank() == 0) {
+            std::cout << crowded << " leaves hold more than " << max_particles_per_node
+                      << " particles: level " << max_level << " is as deep as refine was allowed to go"
+                      << std::endl;
+        }
     }
 
     template<typename F>
