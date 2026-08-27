@@ -20,10 +20,10 @@ public:
     using Coord_t = Container<T, dim>;
     using index_t = default_index_t;
     using zindex_t = default_zindex_t;
+    static constexpr int MAX_LEVEL = bits_per_index<index_t, zindex_t, dim> - 1;
 
 private:
     static constexpr T MARGIN = 1e-3;
-    static constexpr int MAX_LEVEL = bits_per_index<index_t, zindex_t, dim> - 1;
 
     const int _X, _Y, _Z;
     const T _phi;
