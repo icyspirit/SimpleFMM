@@ -52,6 +52,28 @@ inline void allgatherv_inplace(int count, MPI_Datatype type, void* recvbuf, MPI_
 }
 
 
+inline void gatherv_inplace(const void* sendbuf, int count, MPI_Datatype type, void* recvbuf, int root, MPI_Comm comm) noexcept
+{
+    int size, rank;
+    MPI_Comm_size(comm, &size);
+    MPI_Comm_rank(comm, &rank);
+
+    std::vector<int> recvcounts(rank == root ? size : 0);
+    std::vector<int> displs(rank == root ? size : 0);
+
+    MPI_Gather(&count, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, root, comm);
+    if (rank == root) {
+        displs[0] = 0;
+        for (int r=1; r<size; ++r) {
+            displs[r] = displs[r - 1] + recvcounts[r - 1];
+        }
+    }
+
+    MPI_Gatherv(rank == root ? MPI_IN_PLACE : sendbuf, count, type,
+                recvbuf, recvcounts.data(), displs.data(), type, root, comm);
+}
+
+
 template<typename T>
 class svector {
 private:
