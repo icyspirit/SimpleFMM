@@ -4,6 +4,7 @@
 
 
 #include <cstdlib>
+#include <new>
 #include <vector>
 
  
@@ -18,7 +19,12 @@ struct AlignedAllocator {
  
     [[nodiscard]] static T* allocate(std::size_t n)
     {
-        return reinterpret_cast<T*>(std::aligned_alloc(alignment, ((sizeof(T)*n + alignment - 1)/alignment)*alignment));
+        void* p = std::aligned_alloc(alignment, ((sizeof(T)*n + alignment - 1)/alignment)*alignment);
+        if (!p) {
+            throw std::bad_alloc();
+        }
+
+        return reinterpret_cast<T*>(p);
     }
  
     static void deallocate(T* p, [[maybe_unused]] std::size_t n) noexcept
