@@ -1333,7 +1333,7 @@ public:
 
     // L2N accumulates, so the caller's buffer starts clean.
     template<bool gradient=false>
-    void far_field_local(const Vector<T, N>* Q, Vector<T, N>* U) const noexcept
+    void far_field_local(const Vector<T, N>* Q, Vector<T, N>* U) const
     {
         static_assert(support_gradient || !gradient);
 

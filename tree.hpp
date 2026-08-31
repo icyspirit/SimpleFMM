@@ -200,7 +200,7 @@ public:
     }
 
     template<typename U>
-    inline void allreduce(MPI_Op op=MPI_SUM) const noexcept
+    inline void allreduce(MPI_Op op=MPI_SUM) const
     {
         _data.template allreduce<U>(op);
     }
