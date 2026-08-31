@@ -34,7 +34,7 @@ inline I local(I n, int size, int rank) noexcept
 }
 
 
-inline void allgatherv_inplace(int count, MPI_Datatype type, void* recvbuf, MPI_Comm comm) noexcept
+inline void allgatherv_inplace(int count, MPI_Datatype type, void* recvbuf, MPI_Comm comm)
 {
     int size;
     MPI_Comm_size(comm, &size);
@@ -45,14 +45,18 @@ inline void allgatherv_inplace(int count, MPI_Datatype type, void* recvbuf, MPI_
     MPI_Allgather(&count, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, comm);
     displs[0] = 0;
     for (int rank=1; rank<size; ++rank) {
-        displs[rank] = displs[rank - 1] + recvcounts[rank - 1];
+        const long long displ = static_cast<long long>(displs[rank - 1]) + recvcounts[rank - 1];
+        if (displ > INT_MAX) {
+            throw std::overflow_error("allgatherv_inplace: MPI displacement exceeds INT_MAX");
+        }
+        displs[rank] = static_cast<int>(displ);
     }
 
     MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, recvbuf, recvcounts.data(), displs.data(), type, comm);
 }
 
 
-inline void gatherv_inplace(const void* sendbuf, int count, MPI_Datatype type, void* recvbuf, int root, MPI_Comm comm) noexcept
+inline void gatherv_inplace(const void* sendbuf, int count, MPI_Datatype type, void* recvbuf, int root, MPI_Comm comm)
 {
     int size, rank;
     MPI_Comm_size(comm, &size);
@@ -65,7 +69,11 @@ inline void gatherv_inplace(const void* sendbuf, int count, MPI_Datatype type, v
     if (rank == root) {
         displs[0] = 0;
         for (int r=1; r<size; ++r) {
-            displs[r] = displs[r - 1] + recvcounts[r - 1];
+            const long long displ = static_cast<long long>(displs[r - 1]) + recvcounts[r - 1];
+            if (displ > INT_MAX) {
+                throw std::overflow_error("gatherv_inplace: MPI displacement exceeds INT_MAX");
+            }
+            displs[r] = static_cast<int>(displ);
         }
     }
 
