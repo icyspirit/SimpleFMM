@@ -1391,10 +1391,12 @@ public:
         toc("L2L2N");
     }
 
-    // Q and U hold one entry per particle.  Each rank supplies whatever share
-    // of the source term it has and the sum over the communicator is what is
-    // applied; U comes back complete on every rank.  Q is workspace: it is not
-    // preserved, which is what keeps this from needing a buffer of its own.
+    // Q holds one entry per particle.  Each rank supplies whatever share of
+    // the source term it has and the sum over the communicator is what is
+    // applied; Q is workspace, not preserved, which is what keeps this from
+    // needing a buffer of its own.  U is written at every target index on
+    // every rank and nowhere else, so it needs room only up to the last
+    // target and the caller owns whatever it wants in the gaps.
     template<bool gradient=false>
     void rinv_far(Vector<T, N>* Q, Vector<T, N>* U) const
     {
@@ -1413,10 +1415,6 @@ public:
         // Each result has exactly one producer, so gathering beats reducing.
         MPI_Allgatherv(&_Ulocal[0][0], N*static_cast<int>(_target_index.size()), get_mpi_type<T>(),
                        &Q[0][0], _tgt_counts.data(), _tgt_displs.data(), get_mpi_type<T>(), _comm);
-        // Without roles every particle is a target and the scatter covers U.
-        if (_tgt_order.size() != static_cast<std::size_t>(_n_particle)) {
-            std::fill_n(U, _n_particle, Vector<T, N>{});
-        }
         for (std::size_t k=0; k<_tgt_order.size(); ++k) {
             U[_tgt_order[k]] = Q[k];
         }
