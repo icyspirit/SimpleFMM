@@ -186,6 +186,7 @@ private:
     std::vector<int> _source_index;
     std::vector<int> _target_index;
     std::vector<int> _tgt_order;
+    int _n_result = 0;
     std::vector<std::vector<int>> _leaf_load;
     int _n2n_i0 = 0;
     int _n2n_i1 = 0;
@@ -574,6 +575,9 @@ public:
             }
         };
         fill_owner_order(TARGET, _tgt_order, _tgt_displ);
+        for (const int i: _tgt_order) {
+            _n_result = std::max(_n_result, i + 1);
+        }
 
         _tgt_counts.resize(_size);
         _tgt_displs.resize(_size);
@@ -668,6 +672,12 @@ public:
     inline int n_target() const noexcept
     {
         return static_cast<int>(_target_index.size());
+    }
+
+    // Entries the caller's U must hold: rinv and rinv_far write no further.
+    inline int n_result() const noexcept
+    {
+        return _n_result;
     }
 
     // Global indices of the particles this rank reduces, and of the ones it
@@ -1436,7 +1446,7 @@ public:
         }
         far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
 
-        std::fill_n(U, _n_particle, Vector<T, N>{});
+        std::fill_n(U, _n_result, Vector<T, N>{});
         for (std::size_t k=0; k<_target_index.size(); ++k) {
             U[_target_index[k]] = _Ulocal[k];
         }
