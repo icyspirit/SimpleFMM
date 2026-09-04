@@ -27,18 +27,21 @@ int main(int argc, char** argv)
     const double phideg = argc > 3 ? std::atof(argv[3]) : 0;
 
     // Initialize random positions in a cube [0, 1]^3
-    std::vector<Vector_t> positions;
+    svector<Vector_t> positions(get_shm_comm());
     std::vector<Vector_t> vector_charges;
     positions.reserve(N);
     vector_charges.reserve(N);
     for (size_t i=0; i<N; ++i) {
-        positions.push_back({static_cast<double>(std::rand())/RAND_MAX,
-                             static_cast<double>(std::rand())/RAND_MAX,
-                             static_cast<double>(std::rand())/RAND_MAX});
+        if (positions.root()) {
+            positions.emplace_back(Vector_t{static_cast<double>(std::rand())/RAND_MAX,
+                                            static_cast<double>(std::rand())/RAND_MAX,
+                                            static_cast<double>(std::rand())/RAND_MAX});
+        }
         vector_charges.push_back({static_cast<double>(std::rand())/RAND_MAX,
                                   static_cast<double>(std::rand())/RAND_MAX,
                                   static_cast<double>(std::rand())/RAND_MAX});
     }
+    positions.sync_all();
 
     // Define simulation domain by a cube
     Box<double, dim, Vector> box(positions, vertical_axis, phideg);
