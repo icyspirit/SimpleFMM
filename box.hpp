@@ -30,7 +30,8 @@ private:
     T _width;
     Coord_t _corner;
 
-    static std::pair<Coord_t, Coord_t> get_minmax(const std::vector<Coord_t>& vs) noexcept
+    template<typename Positions_t>
+    static std::pair<Coord_t, Coord_t> get_minmax(const Positions_t& vs) noexcept
     {
         Coord_t min{vs.front()};
         Coord_t max{vs.front()};
@@ -81,7 +82,8 @@ public:
         assert(vertical_axis >= 0 && vertical_axis < dim);
     }
 
-    Box(const std::vector<Coord_t>& positions, int vertical_axis=dim - 1, T phideg=0):
+    template<typename Positions_t>
+    Box(const Positions_t& positions, int vertical_axis=dim - 1, T phideg=0):
         _X{(vertical_axis + 1)%dim},
         _Y{(vertical_axis + 2)%dim},
         _Z{vertical_axis},
@@ -121,7 +123,8 @@ public:
         return c_impl(level, (rotate(v) - _corner)/_width, std::make_index_sequence<dim>{});
     }
 
-    auto get_cs(int level, const std::vector<Coord_t>& vs) const noexcept
+    template<typename Positions_t>
+    auto get_cs(int level, const Positions_t& vs) const noexcept
     {
         std::vector<zindex_t> cs;
         cs.reserve(vs.size());
@@ -132,7 +135,8 @@ public:
         return cs;
     }
 
-    auto get_cis(int level, const std::vector<int> indices, const std::vector<Coord_t>& vs) const noexcept
+    template<typename Positions_t>
+    auto get_cis(int level, const std::vector<int> indices, const Positions_t& vs) const noexcept
     {
         std::vector<std::pair<zindex_t, int>> cis;
         cis.reserve(indices.size());

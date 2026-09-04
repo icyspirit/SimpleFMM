@@ -5,6 +5,7 @@
 
 #include "box.hpp"
 #include "csr.hpp"
+#include "distributed.hpp"
 #include "tree.hpp"
 #include <algorithm>
 #include <array>
@@ -44,7 +45,7 @@ private:
     std::vector<OctreeNode> _children;
 
     template<typename Box_t>
-    void subdivide(const std::vector<Coord_t>& positions, const Box_t& box) noexcept
+    void subdivide(const svector<Coord_t>& positions, const Box_t& box) noexcept
     {
         const auto cis = box.get_cis(_l + 1, _indices, positions);
         std::vector<zindex_t> cs(cis.size());
@@ -90,7 +91,7 @@ public:
     }
 
     template<typename Box_t>
-    void refine(const std::vector<Coord_t>& positions, const Box_t& box, int max_level, int max_particles_per_node) noexcept
+    void refine(const svector<Coord_t>& positions, const Box_t& box, int max_level, int max_particles_per_node) noexcept
     {
         long crowded = 0;
         traverse(
@@ -400,7 +401,7 @@ class OctreePartitioner {
     using Node_t = OctreeNode<T, Container>;
 
 private:
-    const std::vector<Coord_t>& _positions;
+    const svector<Coord_t>& _positions;
     const Box_t& _box;
     std::unique_ptr<Node_t> _root;
     int _level;
@@ -408,7 +409,7 @@ private:
     std::vector<std::pair<int, int>> _partitions;
 
 public:
-    OctreePartitioner(const std::vector<Coord_t>& positions, const Box_t& box):
+    OctreePartitioner(const svector<Coord_t>& positions, const Box_t& box):
         _positions{positions},
         _box{box},
         _root{std::make_unique<Node_t>(0, 0, range(0, _positions.size()))}

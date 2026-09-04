@@ -219,6 +219,36 @@ public:
         _size = size;
     }
 
+    inline T* begin() noexcept
+    {
+        return _data;
+    }
+
+    inline T* end() noexcept
+    {
+        return _data + _size;
+    }
+
+    inline const T* begin() const noexcept
+    {
+        return _data;
+    }
+
+    inline const T* end() const noexcept
+    {
+        return _data + _size;
+    }
+
+    inline const T* cbegin() const noexcept
+    {
+        return _data;
+    }
+
+    inline const T* cend() const noexcept
+    {
+        return _data + _size;
+    }
+
     template<typename... Ts>
     void emplace_back(Ts&&... x) noexcept
     {

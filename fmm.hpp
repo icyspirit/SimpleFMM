@@ -172,7 +172,7 @@ class FMM3D {
 private:
     const Partitioner_t& _partitioner;
     const MPI_Comm _comm;
-    const std::vector<Coord_t>& _positions;
+    const svector<Coord_t>& _positions;
     int _n_particle;
     T _width;
 
