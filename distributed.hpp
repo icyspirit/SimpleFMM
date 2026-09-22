@@ -34,51 +34,74 @@ inline I local(I n, int size, int rank) noexcept
 }
 
 
-inline void allgatherv_inplace(int count, MPI_Datatype type, void* recvbuf, MPI_Comm comm)
+inline void allgatherv_inplace(long long count, MPI_Datatype type, void* recvbuf, MPI_Comm comm)
 {
     int size;
     MPI_Comm_size(comm, &size);
 
-    std::vector<int> recvcounts(size);
-    std::vector<int> displs(size);
+    MPI_Aint lb, extent;
+    MPI_Type_get_extent(type, &lb, &extent);
 
-    MPI_Allgather(&count, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, comm);
-    displs[0] = 0;
-    for (int rank=1; rank<size; ++rank) {
-        const long long displ = static_cast<long long>(displs[rank - 1]) + recvcounts[rank - 1];
-        if (displ > INT_MAX) {
-            throw std::overflow_error("allgatherv_inplace: MPI displacement exceeds INT_MAX");
-        }
-        displs[rank] = static_cast<int>(displ);
+    std::vector<long long> counts(size);
+    MPI_Allgather(&count, 1, MPI_LONG_LONG, counts.data(), 1, MPI_LONG_LONG, comm);
+
+    std::vector<long long> offsets(size + 1, 0);
+    for (int rank=0; rank<size; ++rank) {
+        offsets[rank + 1] = offsets[rank] + counts[rank];
     }
 
-    MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, recvbuf, recvcounts.data(), displs.data(), type, comm);
+    std::vector<int> recvcounts(size);
+    std::vector<int> displs(size);
+    for (long long base=0; base<std::max(offsets[size], 1LL); base+=INT_MAX) {
+        const long long stop = std::min(offsets[size], base + INT_MAX);
+        for (int rank=0; rank<size; ++rank) {
+            const long long from = std::max(base, offsets[rank]);
+            const long long to = std::min(stop, offsets[rank + 1]);
+            recvcounts[rank] = to > from ? static_cast<int>(to - from) : 0;
+            displs[rank] = to > from ? static_cast<int>(from - base) : 0;
+        }
+
+        MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, static_cast<char*>(recvbuf) + base*extent,
+                       recvcounts.data(), displs.data(), type, comm);
+    }
 }
 
 
-inline void gatherv_inplace(const void* sendbuf, int count, MPI_Datatype type, void* recvbuf, int root, MPI_Comm comm)
+inline void gatherv_inplace(const void* sendbuf, long long count, MPI_Datatype type, void* recvbuf, int root, MPI_Comm comm)
 {
     int size, rank;
     MPI_Comm_size(comm, &size);
     MPI_Comm_rank(comm, &rank);
 
-    std::vector<int> recvcounts(rank == root ? size : 0);
-    std::vector<int> displs(rank == root ? size : 0);
+    MPI_Aint lb, extent;
+    MPI_Type_get_extent(type, &lb, &extent);
 
-    MPI_Gather(&count, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, root, comm);
-    if (rank == root) {
-        displs[0] = 0;
-        for (int r=1; r<size; ++r) {
-            const long long displ = static_cast<long long>(displs[r - 1]) + recvcounts[r - 1];
-            if (displ > INT_MAX) {
-                throw std::overflow_error("gatherv_inplace: MPI displacement exceeds INT_MAX");
-            }
-            displs[r] = static_cast<int>(displ);
-        }
+    std::vector<long long> counts(size);
+    MPI_Allgather(&count, 1, MPI_LONG_LONG, counts.data(), 1, MPI_LONG_LONG, comm);
+
+    std::vector<long long> offsets(size + 1, 0);
+    for (int r=0; r<size; ++r) {
+        offsets[r + 1] = offsets[r] + counts[r];
     }
 
-    MPI_Gatherv(rank == root ? MPI_IN_PLACE : sendbuf, count, type,
-                recvbuf, recvcounts.data(), displs.data(), type, root, comm);
+    std::vector<int> recvcounts(size);
+    std::vector<int> displs(size);
+    for (long long base=0; base<std::max(offsets[size], 1LL); base+=INT_MAX) {
+        const long long stop = std::min(offsets[size], base + INT_MAX);
+        for (int r=0; r<size; ++r) {
+            const long long from = std::max(base, offsets[r]);
+            const long long to = std::min(stop, offsets[r + 1]);
+            recvcounts[r] = to > from ? static_cast<int>(to - from) : 0;
+            displs[r] = to > from ? static_cast<int>(from - base) : 0;
+        }
+
+        const long long sent = std::max(base, offsets[rank]) - offsets[rank];
+        MPI_Gatherv(rank == root ? MPI_IN_PLACE
+                                 : static_cast<const char*>(sendbuf) + (recvcounts[rank] > 0 ? sent : 0)*extent,
+                    recvcounts[rank], type,
+                    rank == root ? static_cast<char*>(recvbuf) + base*extent : nullptr,
+                    recvcounts.data(), displs.data(), type, root, comm);
+    }
 }
 
 
