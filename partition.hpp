@@ -162,7 +162,6 @@ public:
 
 class OctreeLevel {
     static constexpr size_t dim = 3;
-    static constexpr size_t n_child_max = 1 << dim;
     using index_t = default_index_t;
     using zindex_t = default_zindex_t;
 
@@ -170,59 +169,72 @@ private:
     const int _level;
     int _n_node;
     int _n_leaf;
-    std::vector<zindex_t> _c_node;
-    std::vector<int> _i_leaf;
-    CSRP<> _indices;
+    svector<zindex_t> _c_node;
+    svector<int> _i_leaf;
+    SCSRP<> _indices;
 
     SCSRP<Int3<index_t, zindex_t>> _ilist;
-    CSRP<zindex_t> _clist;
-    std::vector<std::pair<int, zindex_t>> _plist;
-    CSRP<int> _nlist;
+    SCSRP<zindex_t> _clist;
+    svector<std::pair<int, zindex_t>> _plist;
+    SCSRP<int> _nlist;
 
 public:
     template<typename Node_t>
     OctreeLevel(int level, const Node_t* root):
-        _level{level}
+        _level{level},
+        _c_node{get_shm_comm()},
+        _i_leaf{get_shm_comm()},
+        _plist{get_shm_comm()}
     {
         _n_node = 0;
         _n_leaf = 0;
         size_t n_indice = 0;
-        root->traverse(
-            [&](const Node_t* node) {
-                if (node->l() == _level) {
-                    ++_n_node;
-                    if (!node->indices().empty()) {
-                        ++_n_leaf;
-                        n_indice += node->indices().size();
+        if (root) {
+            root->traverse(
+                [&](const Node_t* node) {
+                    if (node->l() == _level) {
+                        ++_n_node;
+                        if (!node->indices().empty()) {
+                            ++_n_leaf;
+                            n_indice += node->indices().size();
+                        }
                     }
+                },
+                [&](const Node_t* node) {
+                    return node->l() <= _level;
                 }
-            },
-            [&](const Node_t* node) {
-                return node->l() <= _level;
-            }
-        );
+            );
+        }
+        int counts[2] = {_n_node, _n_leaf};
+        MPI_Bcast(counts, 2, MPI_INT, 0, get_shm_comm());
+        _n_node = counts[0];
+        _n_leaf = counts[1];
 
         _c_node.reserve(_n_node);
         _i_leaf.reserve(_n_leaf);
-        _indices.reserve_nrow(_n_leaf);
-        _indices.reserve(n_indice);
-        root->traverse(
-            [&](const Node_t* node) {
-                if (node->l() == _level) {
-                    _c_node.emplace_back(node->c());
-                    if (!node->indices().empty()) {
-                        _i_leaf.emplace_back(_c_node.size() - 1);
-                        ++_indices;
-                        for (const int index: node->indices()) {
-                            _indices.emplace_back(index);
+        _indices.reserve(_n_leaf, n_indice);
+        if (_c_node.root()) {
+            root->traverse(
+                [&](const Node_t* node) {
+                    if (node->l() == _level) {
+                        _c_node.emplace_back(node->c());
+                        if (!node->indices().empty()) {
+                            _i_leaf.emplace_back(_c_node.size() - 1);
+                            ++_indices;
+                            for (const int index: node->indices()) {
+                                _indices.emplace_back(index);
+                            }
                         }
                     }
+                },
+                [&](const Node_t* node) {
+                    return node->l() <= _level;
                 }
-            },
-            [&](const Node_t* node) {
-                return node->l() <= _level;
-            }
-        );
+            );
+        }
+        _c_node.sync_all();
+        _i_leaf.sync_all();
+        _indices.finish();
     }
 
     inline int level() const noexcept
@@ -298,11 +310,13 @@ public:
     void create_ilist() noexcept
     {
         int nnz = 0;
-        for (const zindex_t c: _c_node) {
-            interaction_list<index_t, zindex_t> il(_level, c);
-            do {
-                nnz += has(il.z());
-            } while (!(++il).end());
+        if (_ilist.root()) {
+            for (const zindex_t c: _c_node) {
+                interaction_list<index_t, zindex_t> il(_level, c);
+                do {
+                    nnz += has(il.z());
+                } while (!(++il).end());
+            }
         }
 
         _ilist.reserve(_n_node, nnz);
@@ -322,16 +336,27 @@ public:
 
     void create_clist(const OctreeLevel& child) noexcept
     {
-        _clist.reserve_nrow(_n_node);
-        _clist.reserve(_n_node*n_child_max);
-        for (const zindex_t c: _c_node) {
-            ++_clist;
-            children<index_t, zindex_t> ch(c);
-            do {
-                if (child.has(ch.z())) {
-                    _clist.emplace_back(child.index(ch.z()), ch.z());
-                }
-            } while (!(++ch).end());
+        int nnz = 0;
+        if (_clist.root()) {
+            for (const zindex_t c: _c_node) {
+                children<index_t, zindex_t> ch(c);
+                do {
+                    nnz += child.has(ch.z());
+                } while (!(++ch).end());
+            }
+        }
+
+        _clist.reserve(_n_node, nnz);
+        if (_clist.root()) {
+            for (const zindex_t c: _c_node) {
+                ++_clist;
+                children<index_t, zindex_t> ch(c);
+                do {
+                    if (child.has(ch.z())) {
+                        _clist.emplace_back(child.index(ch.z()), ch.z());
+                    }
+                } while (!(++ch).end());
+            }
         }
         _clist.finish();
     }
@@ -339,42 +364,47 @@ public:
     void create_plist(const OctreeLevel& parent) noexcept
     {
         _plist.reserve(_n_node);
-        for (const zindex_t c: _c_node) {
-            assert(parent.has(c >> dim));
-            _plist.push_back({parent.index(c >> dim), c});
+        if (_plist.root()) {
+            for (const zindex_t c: _c_node) {
+                assert(parent.has(c >> dim));
+                _plist.emplace_back(parent.index(c >> dim), c);
+            }
         }
+        _plist.sync_all();
     }
 
-    void add_nlist_ancestor(int i, const OctreeLevel& ancestor) noexcept
+    template<typename F>
+    void walk_nlist_ancestor(int i, const OctreeLevel& ancestor, const F& f) const noexcept
     {
         if (ancestor.is_leaf(i)) {
-            _nlist.emplace_back(ancestor.level(), ancestor.to_leaf(i));
+            f(ancestor.level(), ancestor.to_leaf(i));
         }
     }
 
-    void add_nlist_descendant(int i, const OctreeLevel& descendant, const std::vector<OctreeLevel>& octreeLevels) noexcept
+    template<typename F>
+    void walk_nlist_descendant(int i, const OctreeLevel& descendant, const std::vector<OctreeLevel>& octreeLevels, const F& f) const noexcept
     {
         if (descendant.is_leaf(i)) {
-            _nlist.emplace_back(descendant.level(), descendant.to_leaf(i));
+            f(descendant.level(), descendant.to_leaf(i));
         } else {
             const auto& clist = descendant._clist;
             for (int inz=0; inz<clist.nnz(i); ++inz) {
-                add_nlist_descendant(std::get<0>(clist.value(i, inz)), octreeLevels[descendant.level() + 1], octreeLevels);
+                walk_nlist_descendant(std::get<0>(clist.value(i, inz)), octreeLevels[descendant.level() + 1], octreeLevels, f);
             }
         }
     }
 
-    void create_nlist(const std::vector<OctreeLevel>& octreeLevels) noexcept
+    template<typename R, typename F>
+    void walk_nlist(const std::vector<OctreeLevel>& octreeLevels, const R& row, const F& f) const noexcept
     {
-        _nlist.reserve_nrow(_n_leaf);
         for (const int i: _i_leaf) {
-            ++_nlist;
+            row();
             const zindex_t c = _c_node[i];
             for (int l=0; l<_level; ++l) {
                 neighbor<index_t, zindex_t> neigh(l, c >> dim*(_level - l));
                 do {
                     if (octreeLevels[l].has(neigh.z())) {
-                        add_nlist_ancestor(octreeLevels[l].index(neigh.z()), octreeLevels[l]);
+                        walk_nlist_ancestor(octreeLevels[l].index(neigh.z()), octreeLevels[l], f);
                     }
                 } while (!(++neigh).end());
             }
@@ -382,9 +412,24 @@ public:
             neighbor<index_t, zindex_t> neigh(_level, c);
             do {
                 if (has(neigh.z())) {
-                    add_nlist_descendant(index(neigh.z()), octreeLevels[_level], octreeLevels);
+                    walk_nlist_descendant(index(neigh.z()), octreeLevels[_level], octreeLevels, f);
                 }
             } while (!(++neigh).end());
+        }
+    }
+
+    void create_nlist(const std::vector<OctreeLevel>& octreeLevels) noexcept
+    {
+        int nnz = 0;
+        if (_nlist.root()) {
+            walk_nlist(octreeLevels, []() {}, [&](int, int) { ++nnz; });
+        }
+
+        _nlist.reserve(_n_leaf, nnz);
+        if (_nlist.root()) {
+            walk_nlist(octreeLevels,
+                       [&]() { ++_nlist; },
+                       [&](int l, int i_leaf) { _nlist.emplace_back(l, i_leaf); });
         }
         _nlist.finish();
     }
@@ -429,17 +474,19 @@ public:
     void refine(Option_t... options) noexcept
     {
         _octreeLevels.clear();
-        _root = std::make_unique<Node_t>(0, 0, range(0, _positions.size()));
-        _root->refine(_positions, _box, options...);
-
         _level = 0;
-        _root->traverse(
-            [&](const Node_t* node) {
-                if (node->l() > _level) {
-                    _level = node->l();
+        if (get_shm_rank() == 0) {
+            _root = std::make_unique<Node_t>(0, 0, range(0, _positions.size()));
+            _root->refine(_positions, _box, options...);
+            _root->traverse(
+                [&](const Node_t* node) {
+                    if (node->l() > _level) {
+                        _level = node->l();
+                    }
                 }
-            }
-        );
+            );
+        }
+        MPI_Bcast(&_level, 1, MPI_INT, 0, get_shm_comm());
 
         _octreeLevels.reserve(_level + 1);
         for (int l=0; l<=_level; ++l) {
