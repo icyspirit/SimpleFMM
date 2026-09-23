@@ -162,7 +162,6 @@ public:
 
 class OctreeLevel {
     static constexpr size_t dim = 3;
-    static constexpr size_t n_ilist_max = 6*6*6 - 3*3*3;
     static constexpr size_t n_child_max = 1 << dim;
     using index_t = default_index_t;
     using zindex_t = default_zindex_t;
@@ -175,7 +174,7 @@ private:
     std::vector<int> _i_leaf;
     CSRP<> _indices;
 
-    CSRP<Int3<index_t, zindex_t>> _ilist;
+    SCSRP<Int3<index_t, zindex_t>> _ilist;
     CSRP<zindex_t> _clist;
     std::vector<std::pair<int, zindex_t>> _plist;
     CSRP<int> _nlist;
@@ -298,16 +297,25 @@ public:
 
     void create_ilist() noexcept
     {
-        _ilist.reserve_nrow(_n_node);
-        _ilist.reserve(_n_node*n_ilist_max);
+        int nnz = 0;
         for (const zindex_t c: _c_node) {
-            ++_ilist;
             interaction_list<index_t, zindex_t> il(_level, c);
             do {
-                if (has(il.z())) {
-                    _ilist.emplace_back(index(il.z()), il.ijk() - Int3<index_t, zindex_t>::from_z(c));
-                }
+                nnz += has(il.z());
             } while (!(++il).end());
+        }
+
+        _ilist.reserve(_n_node, nnz);
+        if (_ilist.root()) {
+            for (const zindex_t c: _c_node) {
+                ++_ilist;
+                interaction_list<index_t, zindex_t> il(_level, c);
+                do {
+                    if (has(il.z())) {
+                        _ilist.emplace_back(index(il.z()), il.ijk() - Int3<index_t, zindex_t>::from_z(c));
+                    }
+                } while (!(++il).end());
+            }
         }
         _ilist.finish();
     }
@@ -406,12 +414,13 @@ private:
     std::unique_ptr<Node_t> _root;
     int _level;
     std::vector<OctreeLevel> _octreeLevels;
-    std::vector<std::pair<int, int>> _partitions;
+    svector<std::pair<int, int>> _partitions;
 
 public:
     OctreePartitioner(const svector<Coord_t>& positions, const Box_t& box):
         _positions{positions},
-        _box{box}
+        _box{box},
+        _partitions{get_shm_comm()}
     {
 
     }
@@ -450,15 +459,18 @@ public:
         }
 
         _partitions.resize(_positions.size());
-        for (int l=0; l<=_level; ++l) {
-            const auto& olevel = _octreeLevels[l];
-            const auto& indices = olevel.indices();
-            for (int i_leaf=0; i_leaf<olevel.n_leaf(); ++i_leaf) {
-                for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
-                    _partitions[std::get<0>(indices.value(i_leaf, inz))] = {l, i_leaf};
+        if (_partitions.root()) {
+            for (int l=0; l<=_level; ++l) {
+                const auto& olevel = _octreeLevels[l];
+                const auto& indices = olevel.indices();
+                for (int i_leaf=0; i_leaf<olevel.n_leaf(); ++i_leaf) {
+                    for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                        _partitions[std::get<0>(indices.value(i_leaf, inz))] = {l, i_leaf};
+                    }
                 }
             }
         }
+        _partitions.sync();
 
         _root.reset();
     }
