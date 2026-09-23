@@ -58,7 +58,7 @@ private:
                 _children.emplace_back(_l + 1, c, idx);
             }
         }
-        _indices.clear();
+        _indices = {};
     }
 
 public:
@@ -411,8 +411,7 @@ private:
 public:
     OctreePartitioner(const svector<Coord_t>& positions, const Box_t& box):
         _positions{positions},
-        _box{box},
-        _root{std::make_unique<Node_t>(0, 0, range(0, _positions.size()))}
+        _box{box}
     {
 
     }
@@ -420,6 +419,8 @@ public:
     template<typename... Option_t>
     void refine(Option_t... options) noexcept
     {
+        _octreeLevels.clear();
+        _root = std::make_unique<Node_t>(0, 0, range(0, _positions.size()));
         _root->refine(_positions, _box, options...);
 
         _level = 0;
@@ -458,6 +459,8 @@ public:
                 }
             }
         }
+
+        _root.reset();
     }
 
     inline const auto& positions() const noexcept
@@ -468,11 +471,6 @@ public:
     inline const auto& box() const noexcept
     {
         return _box;
-    }
-
-    inline const auto& root() const noexcept
-    {
-        return _root;
     }
 
     inline int level() const noexcept
