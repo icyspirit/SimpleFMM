@@ -253,6 +253,11 @@ public:
         return _rowPtr.size() > 0 ? nnz(0, _nrow) : 0;
     }
 
+    inline bool binary_search(int row, const Value_t& value) const noexcept
+    {
+        return std::binary_search(_values.cbegin() + _rowPtr[row], _values.cbegin() + _rowPtr[row + 1], value);
+    }
+
     __attribute__((pure)) inline const Value_t& value(int row, int n) const noexcept
     {
         return _values[_rowPtr[row] + n];
