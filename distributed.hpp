@@ -203,6 +203,16 @@ public:
         return _size;
     }
 
+    void free() noexcept
+    {
+        if (_window != MPI_WIN_NULL) {
+            MPI_Win_free(&_window);
+            _window = MPI_WIN_NULL;
+        }
+        _data = nullptr;
+        _size = 0;
+    }
+
     void reserve(size_t size) noexcept
     {
         if (_window != MPI_WIN_NULL) {
