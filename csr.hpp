@@ -233,6 +233,21 @@ public:
         _nrow = 0;
     }
 
+    // Collective; f(row, value) edits each value in place on the shm root,
+    // which owns the storage, and the others see the result on return.
+    template<typename F>
+    void transform(F&& f)
+    {
+        if (root()) {
+            for (int i=0; i<_nrow; ++i) {
+                for (int n=_rowPtr[i]; n<_rowPtr[i + 1]; ++n) {
+                    f(i, _values[n]);
+                }
+            }
+        }
+        _values.sync();
+    }
+
     inline int nrow() const noexcept
     {
         return _nrow;
