@@ -34,6 +34,18 @@ inline I local(I n, int size, int rank) noexcept
 }
 
 
+inline void allreduce_inplace(void* buf, long long count, MPI_Datatype type, MPI_Op op, MPI_Comm comm)
+{
+    MPI_Aint lb, extent;
+    MPI_Type_get_extent(type, &lb, &extent);
+
+    for (long long base=0; base<count; base+=INT_MAX) {
+        const int n = static_cast<int>(std::min(count - base, static_cast<long long>(INT_MAX)));
+        MPI_Allreduce(MPI_IN_PLACE, static_cast<char*>(buf) + base*extent, n, type, op, comm);
+    }
+}
+
+
 inline void allgatherv_inplace(long long count, MPI_Datatype type, void* recvbuf, MPI_Comm comm)
 {
     int size;
@@ -320,12 +332,7 @@ public:
     inline void allreduce(MPI_Op op=MPI_SUM) const
     {
         if (root()) {
-            const size_t count = sizeof(T)/sizeof(U)*_size;
-            // MPI_Allreduce `count` is int; fail loudly rather than narrow silently.
-            if (count > static_cast<size_t>(INT_MAX)) {
-                throw std::overflow_error("svector::allreduce: MPI count exceeds INT_MAX");
-            }
-            MPI_Allreduce(MPI_IN_PLACE, _data, count, get_mpi_type<U>(), op, _intercomm);
+            allreduce_inplace(_data, static_cast<long long>(sizeof(T)/sizeof(U)*_size), get_mpi_type<U>(), op, _intercomm);
         }
     }
 };

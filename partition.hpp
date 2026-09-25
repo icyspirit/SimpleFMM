@@ -9,9 +9,11 @@
 #include "tree.hpp"
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <memory>
 #include <numeric>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 #ifndef NDEBUG
@@ -309,7 +311,7 @@ public:
 
     void create_ilist() noexcept
     {
-        int nnz = 0;
+        long long nnz = 0;
         if (_ilist.root()) {
             for (const zindex_t c: _c_node) {
                 interaction_list<index_t, zindex_t> il(_level, c);
@@ -336,7 +338,7 @@ public:
 
     void create_clist(const OctreeLevel& child) noexcept
     {
-        int nnz = 0;
+        long long nnz = 0;
         if (_clist.root()) {
             for (const zindex_t c: _c_node) {
                 children<index_t, zindex_t> ch(c);
@@ -420,7 +422,7 @@ public:
 
     void create_nlist(const std::vector<OctreeLevel>& octreeLevels) noexcept
     {
-        int nnz = 0;
+        long long nnz = 0;
         if (_nlist.root()) {
             walk_nlist(octreeLevels, []() {}, [&](int, int) { ++nnz; });
         }
@@ -467,7 +469,9 @@ public:
         _box{box},
         _partitions{get_shm_comm()}
     {
-
+        if (positions.size() > static_cast<size_t>(INT_MAX)) {
+            throw std::overflow_error("OctreePartitioner: particle indices are int, so at most INT_MAX particles");
+        }
     }
 
     template<typename... Option_t>

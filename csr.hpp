@@ -20,11 +20,11 @@ template<typename... Ts>
 class CSRP {
 private:
     int _nrow;
-    std::vector<int> _rowPtr;
+    std::vector<long long> _rowPtr;
     std::vector<std::tuple<int, Ts...>> _values;
 
 public:
-    CSRP(int nrow, const std::vector<int>& rowPtr, const std::vector<std::tuple<int, Ts...>>& values):
+    CSRP(int nrow, const std::vector<long long>& rowPtr, const std::vector<std::tuple<int, Ts...>>& values):
         _nrow{nrow}, _rowPtr{rowPtr}, _values{values}
     {
 
@@ -61,17 +61,17 @@ public:
         return _nrow;
     }
 
-    inline int nnz(int begin, int end) const noexcept
+    inline long long nnz(int begin, int end) const noexcept
     {
         return _rowPtr[end] - _rowPtr[begin];
     }
 
     inline int nnz(int row) const noexcept
     {
-        return nnz(row, row + 1);
+        return static_cast<int>(nnz(row, row + 1));
     }
 
-    inline int nnz() const noexcept
+    inline long long nnz() const noexcept
     {
         return nnz(0, _nrow);
     }
@@ -81,7 +81,7 @@ public:
         _rowPtr.reserve(nrow + 1);
     }
 
-    inline void reserve(int nnz) noexcept
+    inline void reserve(long long nnz) noexcept
     {
         _values.reserve(nnz);
     }
@@ -105,9 +105,9 @@ public:
 
     CSRP<> get_inverse_mapping(int nrow) const noexcept
     {
-        std::vector<int> rowPtr(nrow + 1);
+        std::vector<long long> rowPtr(nrow + 1);
         for (int i=0; i<_nrow; ++i) {
-            for (int j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
+            for (long long j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
                 rowPtr[std::get<0>(_values[j]) + 1]++;
             }
         }
@@ -119,7 +119,7 @@ public:
         std::vector<std::tuple<int>> values(rowPtr[nrow]);
         auto rowPtr_ = rowPtr;
         for (int i=0; i<_nrow; ++i) {
-            for (int j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
+            for (long long j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
                 values[rowPtr_[std::get<0>(_values[j])]++] = i;
             }
         }
@@ -134,7 +134,7 @@ public:
         for (int i=0; i<self._nrow; ++i) {
             os << "Row = " << i << ", nnz = " << self.nnz(i) << std::endl;
             os << "Cols = ";
-            for (int j=self._rowPtr[i]; j<self._rowPtr[i + 1]; ++j) {
+            for (long long j=self._rowPtr[i]; j<self._rowPtr[i + 1]; ++j) {
                 os << std::get<0>(self._values[j]) << ", ";
                 //os << "(" << std::get<0>(self._values[j]) << ", " << std::get<1>(self._values[j]) << "), ";
             }
@@ -154,7 +154,7 @@ public:
 
 private:
     int _nrow = 0;
-    svector<int> _rowPtr;
+    svector<long long> _rowPtr;
     svector<Value_t> _values;
 
 public:
@@ -171,12 +171,13 @@ public:
     }
 
     // Collective; rowPtr/values need to be filled on the shm root only.
-    void assign(const std::vector<int>& rowPtr, const std::vector<Value_t>& values)
+    template<typename I>
+    void assign(const std::vector<I>& rowPtr, const std::vector<Value_t>& values)
     {
         _rowPtr.reserve(rowPtr.size());
         _values.reserve(values.size());
         if (root()) {
-            for (const int p: rowPtr) {
+            for (const I p: rowPtr) {
                 _rowPtr.emplace_back(p);
             }
             for (const auto& v: values) {
@@ -188,7 +189,7 @@ public:
         _nrow = static_cast<int>(_rowPtr.size()) - 1;
     }
 
-    void reserve(int nrow, int nnz)
+    void reserve(int nrow, long long nnz)
     {
         _rowPtr.reserve(nrow + 1);
         _values.reserve(nnz);
@@ -240,7 +241,7 @@ public:
     {
         if (root()) {
             for (int i=0; i<_nrow; ++i) {
-                for (int n=_rowPtr[i]; n<_rowPtr[i + 1]; ++n) {
+                for (long long n=_rowPtr[i]; n<_rowPtr[i + 1]; ++n) {
                     f(i, _values[n]);
                 }
             }
@@ -253,17 +254,17 @@ public:
         return _nrow;
     }
 
-    inline int nnz(int begin, int end) const noexcept
+    inline long long nnz(int begin, int end) const noexcept
     {
         return _rowPtr[end] - _rowPtr[begin];
     }
 
     inline int nnz(int row) const noexcept
     {
-        return nnz(row, row + 1);
+        return static_cast<int>(nnz(row, row + 1));
     }
 
-    inline int nnz() const noexcept
+    inline long long nnz() const noexcept
     {
         return _rowPtr.size() > 0 ? nnz(0, _nrow) : 0;
     }
@@ -282,9 +283,9 @@ public:
     {
         assert(row >= 0 && row < _nrow);
 
-        int lo = _rowPtr[row], hi = _rowPtr[row + 1];
+        long long lo = _rowPtr[row], hi = _rowPtr[row + 1];
         while (lo < hi) {
-            const int mid = lo + (hi - lo)/2;
+            const long long mid = lo + (hi - lo)/2;
             if (std::get<0>(_values[mid]) < col) {
                 lo = mid + 1;
             } else {
@@ -298,12 +299,12 @@ public:
 
     SCSRP<> get_inverse_mapping(int nrow) const
     {
-        std::vector<int> rowPtr;
+        std::vector<long long> rowPtr;
         std::vector<std::tuple<int>> values;
         if (root()) {
             rowPtr.assign(nrow + 1, 0);
             for (int i=0; i<_nrow; ++i) {
-                for (int j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
+                for (long long j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
                     rowPtr[std::get<0>(_values[j]) + 1]++;
                 }
             }
@@ -315,7 +316,7 @@ public:
             values.resize(rowPtr[nrow]);
             auto rowPtr_ = rowPtr;
             for (int i=0; i<_nrow; ++i) {
-                for (int j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
+                for (long long j=_rowPtr[i]; j<_rowPtr[i + 1]; ++j) {
                     values[rowPtr_[std::get<0>(_values[j])]++] = i;
                 }
             }
