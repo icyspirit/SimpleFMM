@@ -99,12 +99,8 @@ public:
         const auto dl = minmax.second - minmax.first;
         const T dmax = max_element(dl);
 
-        auto center = (minmax.second + minmax.first)/2;
-        _width = (1 + 2*MARGIN)*dl[dim - 1];
-        while (_width < dmax) {
-            center[dim - 1] += _width/2;
-            _width *= 2;
-        }
+        const auto center = (minmax.second + minmax.first)/2;
+        _width = (1 + 2*MARGIN)*dmax;
         _corner = center - _width/2;
     }
 
