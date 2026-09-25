@@ -12,7 +12,6 @@
 #include "tree.hpp"
 #include <algorithm>
 #include <array>
-#include <climits>
 #include <stdexcept>
 #include <cassert>
 #include <cmath>
@@ -187,22 +186,12 @@ private:
     std::vector<int> _target_index;
     std::vector<int> _tgt_order;
     int _n_result = 0;
-    std::vector<std::vector<int>> _leaf_load;
+    std::vector<std::vector<long long>> _leaf_load;
     int _n2n_i0 = 0;
     int _n2n_i1 = 0;
     std::vector<int> _tgt_displ;
-    std::vector<int> _tgt_counts;
-    std::vector<int> _tgt_displs;
     mutable std::vector<Vector<T, N>> _Qlocal;
     mutable std::vector<Vector<T, N>> _Ulocal;
-
-    void check_mpi_count() const
-    {
-        // MPI counts are int; fail loudly rather than narrow silently.
-        if (static_cast<std::size_t>(N)*_n_particle > static_cast<std::size_t>(INT_MAX)) {
-            throw std::overflow_error("FMM3D: MPI count exceeds INT_MAX");
-        }
-    }
     avector<T> _phi;
     avector<std::array<T, nm2i(p, p) + 1>> _Zrho;
     avector<std::array<Vector<std::complex<T>, dim>, nm2i(p, p) + 1>> _Zgrho;
@@ -579,12 +568,6 @@ public:
             _n_result = std::max(_n_result, i + 1);
         }
 
-        _tgt_counts.resize(_size);
-        _tgt_displs.resize(_size);
-        for (int r=0; r<_size; ++r) {
-            _tgt_counts[r] = N*(_tgt_displ[r + 1] - _tgt_displ[r]);
-            _tgt_displs[r] = N*_tgt_displ[r];
-        }
         _Qlocal.resize(_source_index.size());
         _Ulocal.resize(_target_index.size());
 
@@ -1411,11 +1394,10 @@ public:
     void rinv_far(Vector<T, N>* Q, Vector<T, N>* U) const
     {
         static_assert(support_gradient || !gradient);
-        check_mpi_count();
 
         // A reduce-scatter moves half the bytes but measures ~2x slower here:
         // the irregular form misses the tuned paths an allreduce lands on.
-        MPI_Allreduce(MPI_IN_PLACE, &Q[0][0], N*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
+        allreduce_inplace(&Q[0][0], static_cast<long long>(N)*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
         for (std::size_t k=0; k<_source_index.size(); ++k) {
             _Qlocal[k] = Q[_source_index[k]];
         }
@@ -1423,8 +1405,8 @@ public:
         far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
 
         // Each result has exactly one producer, so gathering beats reducing.
-        MPI_Allgatherv(&_Ulocal[0][0], N*static_cast<int>(_target_index.size()), get_mpi_type<T>(),
-                       &Q[0][0], _tgt_counts.data(), _tgt_displs.data(), get_mpi_type<T>(), _comm);
+        std::copy(_Ulocal.cbegin(), _Ulocal.cend(), Q + _tgt_displ[_rank]);
+        allgatherv_inplace(static_cast<long long>(N)*_target_index.size(), get_mpi_type<T>(), &Q[0][0], _comm);
         for (std::size_t k=0; k<_tgt_order.size(); ++k) {
             U[_tgt_order[k]] = Q[k];
         }
@@ -1434,12 +1416,11 @@ public:
     void rinv(Vector<T, N>* Q, Vector<T, N>* U, const IsSelf& is_self) const
     {
         static_assert(support_gradient || !gradient);
-        check_mpi_count();
 
         // The near field reads Q at arbitrary neighbours, so unlike the far
         // field this one cannot be given each rank only its own share.  Q is
         // completed in place rather than consumed, and stays that way.
-        MPI_Allreduce(MPI_IN_PLACE, &Q[0][0], N*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
+        allreduce_inplace(&Q[0][0], static_cast<long long>(N)*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
 
         for (std::size_t k=0; k<_source_index.size(); ++k) {
             _Qlocal[k] = Q[_source_index[k]];
@@ -1457,7 +1438,7 @@ public:
 
         // N2N and L2N divide the particles differently, so an entry of U can
         // have been written by two ranks at once.
-        MPI_Allreduce(MPI_IN_PLACE, &U[0][0], N*_n_particle, get_mpi_type<T>(), MPI_SUM, _comm);
+        allreduce_inplace(&U[0][0], static_cast<long long>(N)*_n_result, get_mpi_type<T>(), MPI_SUM, _comm);
     }
 
     template<bool gradient=false>
