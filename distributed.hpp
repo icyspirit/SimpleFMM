@@ -16,14 +16,14 @@
 template<typename I>
 inline I begin(I n, int size, int rank) noexcept
 {
-    return n*rank/size;
+    return static_cast<I>(static_cast<long long>(n)*rank/size);
 }
 
 
 template<typename I>
 inline I end(I n, int size, int rank) noexcept
 {
-    return n*(rank + 1)/size;
+    return static_cast<I>(static_cast<long long>(n)*(rank + 1)/size);
 }
 
 
