@@ -46,36 +46,48 @@ inline void allreduce_inplace(void* buf, long long count, MPI_Datatype type, MPI
 }
 
 
+inline void allgatherv_inplace(const std::vector<long long>& from, const std::vector<long long>& to,
+                               MPI_Datatype type, void* recvbuf, MPI_Comm comm)
+{
+    const int size = static_cast<int>(from.size());
+
+    MPI_Aint lb, extent;
+    MPI_Type_get_extent(type, &lb, &extent);
+
+    const long long total = *std::max_element(to.cbegin(), to.cend());
+
+    std::vector<int> recvcounts(size);
+    std::vector<int> displs(size);
+    for (long long base=0; base<std::max(total, 1LL); base+=INT_MAX) {
+        const long long stop = std::min(total, base + INT_MAX);
+        for (int rank=0; rank<size; ++rank) {
+            const long long f = std::max(base, from[rank]);
+            const long long t = std::min(stop, to[rank]);
+            recvcounts[rank] = t > f ? static_cast<int>(t - f) : 0;
+            displs[rank] = t > f ? static_cast<int>(f - base) : 0;
+        }
+        MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, static_cast<char*>(recvbuf) + base*extent,
+                       recvcounts.data(), displs.data(), type, comm);
+    }
+}
+
+
 inline void allgatherv_inplace(long long count, MPI_Datatype type, void* recvbuf, MPI_Comm comm)
 {
     int size;
     MPI_Comm_size(comm, &size);
 
-    MPI_Aint lb, extent;
-    MPI_Type_get_extent(type, &lb, &extent);
-
     std::vector<long long> counts(size);
     MPI_Allgather(&count, 1, MPI_LONG_LONG, counts.data(), 1, MPI_LONG_LONG, comm);
 
-    std::vector<long long> offsets(size + 1, 0);
+    std::vector<long long> from(size);
+    std::vector<long long> to(size);
     for (int rank=0; rank<size; ++rank) {
-        offsets[rank + 1] = offsets[rank] + counts[rank];
+        from[rank] = rank > 0 ? to[rank - 1] : 0;
+        to[rank] = from[rank] + counts[rank];
     }
 
-    std::vector<int> recvcounts(size);
-    std::vector<int> displs(size);
-    for (long long base=0; base<std::max(offsets[size], 1LL); base+=INT_MAX) {
-        const long long stop = std::min(offsets[size], base + INT_MAX);
-        for (int rank=0; rank<size; ++rank) {
-            const long long from = std::max(base, offsets[rank]);
-            const long long to = std::min(stop, offsets[rank + 1]);
-            recvcounts[rank] = to > from ? static_cast<int>(to - from) : 0;
-            displs[rank] = to > from ? static_cast<int>(from - base) : 0;
-        }
-
-        MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DATATYPE_NULL, static_cast<char*>(recvbuf) + base*extent,
-                       recvcounts.data(), displs.data(), type, comm);
-    }
+    allgatherv_inplace(from, to, type, recvbuf, comm);
 }
 
 
@@ -198,6 +210,16 @@ public:
     inline bool root() const noexcept
     {
         return _intercomm != MPI_COMM_NULL;
+    }
+
+    inline MPI_Comm intracomm() const noexcept
+    {
+        return _intracomm;
+    }
+
+    inline MPI_Comm intercomm() const noexcept
+    {
+        return _intercomm;
     }
 
     inline T* data() noexcept
