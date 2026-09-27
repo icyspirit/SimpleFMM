@@ -76,6 +76,30 @@ int main(int argc, char** argv)
     MPI_Allreduce(MPI_IN_PLACE, vector_fields_fmm.data(), dim*N, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     toc("FMM field calculation");
 
+    // The far field through shared buffers, against the plain call with the
+    // same sources supplied by rank 0 alone.
+    std::vector<Vector_t> Q_plain(N);
+    std::vector<Vector_t> U_plain(fmm.n_result());
+    svector<Vector_t> Q_shared(MPI_COMM_WORLD, N);
+    svector<Vector_t> U_shared(MPI_COMM_WORLD, fmm.n_result());
+    if (rank == 0) {
+        Q_plain = vector_charges;
+        std::copy(vector_charges.cbegin(), vector_charges.cend(), Q_shared.data());
+    }
+    tic("FMM far field, plain");
+    fmm.rinv_far(Q_plain.data(), U_plain.data());
+    toc("FMM far field, plain");
+    tic("FMM far field, shared");
+    fmm.rinv_far(Q_shared, U_shared);
+    toc("FMM far field, shared");
+    if (rank == 0) {
+        double diff = 0;
+        for (int i=0; i<fmm.n_result(); ++i) {
+            diff = std::max(diff, (U_plain[i] - U_shared[i]).norm());
+        }
+        std::cout << "Max difference between plain and shared far field = " << diff << std::endl;
+    }
+
     // Calculation via direct method
     svector<Vector_t> vector_potentials_direct(MPI_COMM_WORLD, N);
     svector<Vector_t> vector_fields_direct(MPI_COMM_WORLD, N);

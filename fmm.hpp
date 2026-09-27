@@ -17,6 +17,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <numeric>
 #include <tuple>
 #include <vector>
 #ifndef NDEBUG
@@ -184,12 +185,16 @@ private:
     std::vector<int> _tgt_off;
     std::vector<int> _source_index;
     std::vector<int> _target_index;
-    std::vector<int> _tgt_order;
+    svector<int> _tgt_order;
     int _n_result = 0;
     std::vector<std::vector<long long>> _leaf_load;
     int _n2n_i0 = 0;
     int _n2n_i1 = 0;
-    std::vector<int> _tgt_displ;
+    std::vector<int> _tgt_begin;
+    std::vector<int> _tgt_end;
+    int _node_rank, _node_size;
+    int _node_begin = 0;
+    int _node_end = 0;
     mutable std::vector<Vector<T, N>> _Qlocal;
     mutable std::vector<Vector<T, N>> _Ulocal;
     avector<T> _phi;
@@ -269,7 +274,8 @@ public:
         _comm{comm},
         _positions{partitioner.positions()},
         _n_particle{static_cast<int>(_positions.size())},
-        _width{partitioner.box().width()}
+        _width{partitioner.box().width()},
+        _tgt_order{comm}
     {
         MPI_Comm_size(_comm, &_size);
         MPI_Comm_rank(_comm, &_rank);
@@ -543,30 +549,57 @@ public:
             }
         }
 
-        const auto fill_owner_order = [&](unsigned char role, std::vector<int>& order, std::vector<int>& displ) {
-            order.reserve(_n_particle);
-            displ.assign(_size + 1, 0);
-            for (int r=0; r<_size; ++r) {
-                for (int l=0; l<=n_level; ++l) {
-                    const auto& olevel = _partitioner.octreeLevel(l);
-                    const auto& indices = olevel.indices();
-                    const auto [leaf0, leaf1] = balanced_leaf_range(l, r);
-                    for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
-                        for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
-                            const int i = std::get<0>(indices.value(i_leaf, inz));
-                            if (_role[i] & role) {
-                                order.emplace_back(i);
+        std::vector<int> node_of(_size);
+        {
+            MPI_Comm node_comm;
+            MPI_Comm_split_type(_comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
+            MPI_Comm_rank(node_comm, &_node_rank);
+            MPI_Comm_size(node_comm, &_node_size);
+            int node = _rank;
+            MPI_Bcast(&node, 1, MPI_INT, 0, node_comm);
+            MPI_Allgather(&node, 1, MPI_INT, node_of.data(), 1, MPI_INT, _comm);
+            MPI_Comm_free(&node_comm);
+        }
+        std::vector<int> node_order(_size);
+        std::iota(node_order.begin(), node_order.end(), 0);
+        std::stable_sort(node_order.begin(), node_order.end(),
+                         [&](int a, int b) noexcept { return node_of[a] < node_of[b]; });
+
+        // Owners grouped by node keep each node's results in one contiguous run.
+        _tgt_begin.resize(_size);
+        _tgt_end.resize(_size);
+        _tgt_order.reserve(_n_particle);
+        int n_order = 0;
+        bool node_seen = false;
+        for (const int r: node_order) {
+            _tgt_begin[r] = n_order;
+            for (int l=0; l<=n_level; ++l) {
+                const auto& olevel = _partitioner.octreeLevel(l);
+                const auto& indices = olevel.indices();
+                const auto [leaf0, leaf1] = balanced_leaf_range(l, r);
+                for (int i_leaf=leaf0; i_leaf<leaf1; ++i_leaf) {
+                    for (int inz=0; inz<indices.nnz(i_leaf); ++inz) {
+                        const int i = std::get<0>(indices.value(i_leaf, inz));
+                        if (_role[i] & TARGET) {
+                            if (_tgt_order.root()) {
+                                _tgt_order.emplace_back(i);
                             }
+                            _n_result = std::max(_n_result, i + 1);
+                            ++n_order;
                         }
                     }
                 }
-                displ[r + 1] = static_cast<int>(order.size());
             }
-        };
-        fill_owner_order(TARGET, _tgt_order, _tgt_displ);
-        for (const int i: _tgt_order) {
-            _n_result = std::max(_n_result, i + 1);
+            _tgt_end[r] = n_order;
+            if (node_of[r] == node_of[_rank]) {
+                if (!node_seen) {
+                    _node_begin = _tgt_begin[r];
+                    node_seen = true;
+                }
+                _node_end = n_order;
+            }
         }
+        _tgt_order.sync_all();
 
         _Qlocal.resize(_source_index.size());
         _Ulocal.resize(_target_index.size());
@@ -637,14 +670,9 @@ public:
         return _partitioner;
     }
 
-    inline const std::vector<int>& target_owner_order() const noexcept
+    inline const svector<int>& target_owner_order() const noexcept
     {
         return _tgt_order;
-    }
-
-    inline const std::vector<int>& target_owner_displ() const noexcept
-    {
-        return _tgt_displ;
     }
 
     inline int n_source() const noexcept
@@ -1405,11 +1433,50 @@ public:
         far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
 
         // Each result has exactly one producer, so gathering beats reducing.
-        std::copy(_Ulocal.cbegin(), _Ulocal.cend(), Q + _tgt_displ[_rank]);
-        allgatherv_inplace(static_cast<long long>(N)*_target_index.size(), get_mpi_type<T>(), &Q[0][0], _comm);
+        std::copy(_Ulocal.cbegin(), _Ulocal.cend(), Q + _tgt_begin[_rank]);
+        std::vector<long long> from(_size);
+        std::vector<long long> to(_size);
+        for (int r=0; r<_size; ++r) {
+            from[r] = static_cast<long long>(N)*_tgt_begin[r];
+            to[r] = static_cast<long long>(N)*_tgt_end[r];
+        }
+        allgatherv_inplace(from, to, get_mpi_type<T>(), &Q[0][0], _comm);
         for (std::size_t k=0; k<_tgt_order.size(); ++k) {
             U[_tgt_order[k]] = Q[k];
         }
+    }
+
+    // Q and U are shared over the nodes of this communicator (built on comm()).
+    // On entry Q holds each node's summed sources; on exit U holds the result
+    // at every target on every node.
+    template<bool gradient=false>
+    void rinv_far(svector<Vector<T, N>>& Q, svector<Vector<T, N>>& U) const
+    {
+        static_assert(support_gradient || !gradient);
+
+        Q.sync();
+        Q.template allreduce<T>();
+        Q.sync();
+        for (std::size_t k=0; k<_source_index.size(); ++k) {
+            _Qlocal[k] = Q[_source_index[k]];
+        }
+        Q.sync();
+
+        far_field_local<gradient>(_Qlocal.data(), _Ulocal.data());
+
+        std::copy(_Ulocal.cbegin(), _Ulocal.cend(), Q.data() + _tgt_begin[_rank]);
+        Q.sync();
+        if (Q.root()) {
+            allgatherv_inplace(static_cast<long long>(N)*(_node_end - _node_begin), get_mpi_type<T>(),
+                               &Q[0][0], Q.intercomm());
+        }
+        Q.sync();
+        const std::size_t k0 = begin(_tgt_order.size(), _node_size, _node_rank);
+        const std::size_t k1 = end(_tgt_order.size(), _node_size, _node_rank);
+        for (std::size_t k=k0; k<k1; ++k) {
+            U[_tgt_order[k]] = Q[k];
+        }
+        U.sync();
     }
 
     template<bool gradient=false, typename IsSelf>
