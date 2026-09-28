@@ -11,9 +11,7 @@
 #include <utility>
 #include <vector>
 
-#ifndef NDEBUG
 #include <ostream>
-#endif
 
 
 template<typename... Ts>
@@ -127,7 +125,6 @@ public:
         return CSRP<>(nrow, rowPtr, values);
     }
 
-#ifndef NDEBUG
     friend std::ostream& operator <<(std::ostream& os, const CSRP& self)
     {
         os << "Nrow = " << self._nrow << std::endl;
@@ -143,7 +140,6 @@ public:
 
         return os;
     }
-#endif
 };
 
 

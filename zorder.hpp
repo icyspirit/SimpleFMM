@@ -5,9 +5,7 @@
 
 #include <cassert>
 #include <cstddef>
-#ifndef NDEBUG
 #include <ostream>
-#endif
 #include <type_traits>
 #include <utility>
 #include <cstdint>
@@ -136,12 +134,10 @@ struct Int3 {
         return lhs.i < rhs.i;
     }
 
-#ifndef NDEBUG
     friend std::ostream& operator <<(std::ostream& os, const Int3& self)
     {
         return os << '(' << self.i << ", " << self.j << ", " << self.k << ')';
     }
-#endif
 };
 
 
