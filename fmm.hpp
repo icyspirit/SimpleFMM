@@ -399,7 +399,7 @@ public:
                                     const Vector<std::complex<T>, dim> vec{
                                         std::polar(n*rhonm1*Z(n, m, theta), -m*_phi[slot]),
                                         std::polar(rhonm1/std::sin(theta)*(std::sqrt(static_cast<T>((n + 1)*(n + 1) - m*m))*Z(n + 1, m, theta) - (n + 1)*std::cos(theta)*Z(n, m, theta)), -m*_phi[slot]),
-                                        std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[slot] + M_PI/2))
+                                        std::polar(m*rhonm1/std::sin(theta)*Z(n, m, theta), -(m*_phi[slot] + static_cast<T>(M_PI/2)))
                                     };
                                     _Zgrho[src][nm2i(n, m)] = _partitioner.box().template unrotate<std::complex<T>>(rot.dot(vec));
                                 }
