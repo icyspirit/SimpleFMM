@@ -8,9 +8,8 @@
 #include <type_traits>
 #include <utility>
 
-#ifndef NDEBUG
 #include <ostream>
-#endif
+#include <stdexcept>
 
 
 template<typename T>
@@ -85,7 +84,6 @@ struct Contiguous_t<Element_t, std::index_sequence<I...>, Derived_t>: std::array
         return Derived_t{{(at(I)/other)...}};
     }
 
-#ifndef NDEBUG
     friend std::ostream& operator <<(std::ostream& os, const Contiguous_t& self)
     {
         if constexpr (std::is_arithmetic_v<Element_t>) {
@@ -94,7 +92,6 @@ struct Contiguous_t<Element_t, std::index_sequence<I...>, Derived_t>: std::array
             return ((os << self.at(I) << '\n'), ...);
         }
     }
-#endif
 };
 
 

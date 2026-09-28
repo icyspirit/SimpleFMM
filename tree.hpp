@@ -10,9 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#ifndef NDEBUG
 #include <ostream>
-#endif
 
 
 inline constexpr int absi(int m) noexcept

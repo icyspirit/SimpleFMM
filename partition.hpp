@@ -16,9 +16,7 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
-#ifndef NDEBUG
 #include <ostream>
-#endif
 
 
 #include <iostream>
@@ -436,7 +434,6 @@ public:
         _nlist.finish();
     }
 
-#ifndef NDEBUG
     friend std::ostream& operator <<(std::ostream& os, const OctreeLevel& self)
     {
         return os << "level = " << self.level() <<
@@ -444,7 +441,6 @@ public:
                      ", n_leaf = " << self.n_leaf() <<
                      ", n_particle = " << self.indices().nnz() << std::endl;
     }
-#endif
 };
 
 
@@ -563,7 +559,6 @@ public:
         return _octreeLevels[l].nlist().binary_search(i_leaf, _partitions[j]);
     }
 
-#ifndef NDEBUG
     friend std::ostream& operator <<(std::ostream& os, const OctreePartitioner& self)
     {
         for (int l=0; l<=self.level(); ++l) {
@@ -572,7 +567,6 @@ public:
 
         return os;
     }
-#endif
 };
 
 

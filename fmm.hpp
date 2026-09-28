@@ -20,9 +20,7 @@
 #include <numeric>
 #include <tuple>
 #include <vector>
-#ifndef NDEBUG
 #include <iostream>
-#endif
 
 #ifdef FMM_MEASURE_TIMING
 #include "timer.hpp"
