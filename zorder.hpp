@@ -44,48 +44,6 @@ inline zindex_t ijk2z(index_t i, index_t j, index_t k) noexcept
 }
 
 
-template<typename zindex_t, typename index_t>
-inline zindex_t ijk2h(index_t i, index_t j, index_t k, int bits) noexcept
-{
-    using u_t = std::make_unsigned_t<index_t>;
-    u_t x[3] = {static_cast<u_t>(i), static_cast<u_t>(j), static_cast<u_t>(k)};
-
-    for (u_t q=static_cast<u_t>(1) << (bits - 1); q>1; q>>=1) {
-        const u_t p = q - 1;
-        for (int d=0; d<3; ++d) {
-            if (x[d] & q) {
-                x[0] ^= p;
-            } else {
-                const u_t t = (x[0] ^ x[d]) & p;
-                x[0] ^= t;
-                x[d] ^= t;
-            }
-        }
-    }
-    for (int d=1; d<3; ++d) {
-        x[d] ^= x[d - 1];
-    }
-    u_t t = 0;
-    for (u_t q=static_cast<u_t>(1) << (bits - 1); q>1; q>>=1) {
-        if (x[2] & q) {
-            t ^= q - 1;
-        }
-    }
-    for (int d=0; d<3; ++d) {
-        x[d] ^= t;
-    }
-
-    zindex_t h = 0;
-    for (int b=bits - 1; b>=0; --b) {
-        for (int d=0; d<3; ++d) {
-            h = (h << 1) | static_cast<zindex_t>((x[d] >> b) & 1);
-        }
-    }
-
-    return h;
-}
-
-
 template<size_t dim, size_t IJK, typename index_t, size_t... I, typename zindex_t, typename=std::enable_if_t<IJK < dim>>
 inline index_t z2i_impl(zindex_t z, std::index_sequence<I...>) noexcept
 {
